@@ -1,0 +1,9 @@
+[submodule "data-copying"]
+	path = data-copying
+	url = git@github.com:jybai/data-copying.git
+[submodule "cifar-10.1-pytorch"]
+	path = cifar-10.1-pytorch
+	url = git@github.com:jybai/cifar-10.1-pytorch.git
+[submodule "PyTorch_CIFAR10"]
+	path = PyTorch_CIFAR10
+	url = https://github.com/huyvnphan/PyTorch_CIFAR10.git

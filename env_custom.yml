@@ -1,0 +1,17 @@
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python>=3.6
+  - scipy=1.1.0
+  - scikit-learn
+  - seaborn
+  - h5py
+  - tqdm
+  - pytorch=1.6
+  - torchvision>=0.7.0
+  - tensorboard
+  - jupyter
+  - pip
+  - pip:
+    - torchlars
