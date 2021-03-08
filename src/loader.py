@@ -18,6 +18,7 @@ from utils.log import make_checkpoint_dir, make_logger
 from utils.losses import *
 from utils.load_checkpoint import load_checkpoint
 from utils.misc import *
+from utils.mrt import prepare_default_mmg
 from utils.biggan_utils import ema, ema_DP_SyncBN
 from sync_batchnorm.batchnorm import convert_model
 from worker import make_worker
@@ -75,6 +76,11 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
     train_dataloader = DataLoader(train_dataset, batch_size=cfgs.batch_size, shuffle=(train_sampler is None), pin_memory=True,
                                   num_workers=cfgs.num_workers, sampler=train_sampler, drop_last=True)
     eval_dataloader = DataLoader(eval_dataset, batch_size=cfgs.batch_size, shuffle=False, pin_memory=True, num_workers=cfgs.num_workers, drop_last=False)
+
+    ##### prepare memorization rejection mask #####
+    vanilla_train_dset = LoadDataset(cfgs.dataset_name, cfgs.data_path, train=True, download=True, 
+                                     resize_size=cfgs.img_size, hdf5_path=hdf5_path_train, normalize=False) # range=[0, 1]
+    mmg = prepare_default_mmg(mrt=cfgs.train_configs['mrt'], mrq=None, device=local_rank, vanilla_train_dset=vanilla_train_dset)
 
     ##### build model #####
     if local_rank == 0: logger.info('Build model...')
@@ -216,6 +222,7 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
         Gen_ema=Gen_ema,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
+        mmg=mmg,
         train_dataloader=train_dataloader,
         eval_dataloader=eval_dataloader,
         G_optimizer=G_optimizer,

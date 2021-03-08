@@ -2,5 +2,11 @@
 *.pyc
 db.sqlite3
 *.DS_Store
+*.un~
 media/
 res/
+
+logs/
+checkpoints/
+data/
+*.ipynb_checkpoints/

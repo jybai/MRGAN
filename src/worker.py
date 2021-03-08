@@ -50,12 +50,13 @@ LOG_FORMAT = (
     "ada_p: {ada_p:<.6} "
     "Discriminator_loss: {dis_loss:<.6} "
     "Generator_loss: {gen_loss:<.6} "
+    "mar: {mar:<.3}"
 )
 
 
 class make_worker(object):
     def __init__(self, cfgs, run_name, best_step, logger, writer, n_gpus, gen_model, dis_model, inception_model, Gen_copy,
-                 Gen_ema, train_dataset, eval_dataset, train_dataloader, eval_dataloader, G_optimizer, D_optimizer, G_loss,
+                 Gen_ema, train_dataset, eval_dataset, mmg, train_dataloader, eval_dataloader, G_optimizer, D_optimizer, G_loss,
                  D_loss, prev_ada_p, global_rank, local_rank, bn_stat_OnTheFly, checkpoint_dir, mu, sigma, best_fid,
                  best_fid_checkpoint_path):
 
@@ -80,6 +81,8 @@ class make_worker(object):
         self.eval_dataset = eval_dataset
         self.train_dataloader = train_dataloader
         self.eval_dataloader = eval_dataloader
+
+        self.mmg = mmg
 
         self.freeze_layers = cfgs.freeze_layers
 
@@ -204,6 +207,8 @@ class make_worker(object):
         if self.global_rank == 0: self.logger.info('Start training....')
         step_count = current_step
         train_iter = iter(self.train_dataloader)
+
+        mars = []
 
         self.ada_aug_p = self.adtv_aug.initialize() if self.ada else 'No'
         while step_count <= total_step:
@@ -384,6 +389,11 @@ class make_worker(object):
                                                                  self.latent_op_beta, True, self.local_rank)
 
                         fake_images = self.gen_model(zs, fake_labels)
+                        mask = self.mmg((fake_images.detach() + 1.) / 2., fake_labels).view(-1)
+                        fake_images = fake_images[mask]
+                        fake_labels = fake_labels[mask]
+                        mars.append(torch.sum(mask.float()).item() / mask.shape[0])
+
                         if self.diff_aug:
                             fake_images = DiffAugment(fake_images, policy=self.policy)
                         if self.ada:
@@ -412,7 +422,8 @@ class make_worker(object):
                         if self.conditional_strategy == "ACGAN":
                             gen_acml_loss += self.ce_loss(cls_out_fake, fake_labels)
                         elif self.conditional_strategy == "ContraGAN":
-                            gen_acml_loss += self.contrastive_lambda*self.contrastive_criterion(cls_embed_fake, cls_proxies_fake, fake_cls_mask, fake_labels, t, self.margin)
+                            gen_acml_loss += self.contrastive_lambda*self.contrastive_criterion(cls_embed_fake, cls_proxies_fake, fake_cls_mask, 
+                                                                                                fake_labels, t, self.margin)
                         elif self.conditional_strategy == "Proxy_NCA_GAN":
                             gen_acml_loss += self.contrastive_lambda*self.NCA_criterion(cls_embed_fake, cls_proxies_fake, fake_labels)
                         elif self.conditional_strategy == "NT_Xent_GAN":
@@ -449,6 +460,7 @@ class make_worker(object):
                                                 ada_p=self.ada_aug_p,
                                                 dis_loss=dis_acml_loss.item(),
                                                 gen_loss=gen_acml_loss.item(),
+                                                mar=np.mean(mars),
                                                 )
                 self.logger.info(log_message)
 
@@ -460,6 +472,9 @@ class make_worker(object):
                                                    'generator': gen_acml_loss.item()}, step_count)
                 if self.ada:
                     self.writer.add_scalar('ada_p', self.ada_aug_p, step_count)
+                self.writer.add_scalar('mar', np.mean(mars), step_count)
+                # reset
+                mars = []
 
             if step_count % self.save_every == 0 or step_count == total_step:
                 if self.evaluate:

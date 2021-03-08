@@ -15,8 +15,6 @@ import torch.nn.functional as F
 from torch.nn import DataParallel
 from torch import autograd
 
-
-
 # DCGAN loss
 def loss_dcgan_dis(dis_out_real, dis_out_fake):
     device = dis_out_real.get_device()

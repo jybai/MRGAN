@@ -31,6 +31,9 @@ RUN_NAME_FORMAT = (
 
 def main():
     parser = ArgumentParser(add_help=False)
+
+    parser.add_argument('--mrt', type=float, default=0.0, help='memorization rejection threshold')
+
     parser.add_argument('-c', '--config_path', type=str, default='./src/configs/CIFAR10/ContraGAN.json')
     parser.add_argument('--checkpoint_folder', type=str, default=None)
     parser.add_argument('-current', '--load_current', action='store_true', help='whether you load the current or best checkpoint')

@@ -53,7 +53,7 @@ class CenterCropLongEdge(object):
 
 
 class LoadDataset(Dataset):
-    def __init__(self, dataset_name, data_path, train, download, resize_size, hdf5_path=None, random_flip=False):
+    def __init__(self, dataset_name, data_path, train, download, resize_size, hdf5_path=None, random_flip=False, normalize=True):
         super(LoadDataset, self).__init__()
         self.dataset_name = dataset_name
         self.data_path = data_path
@@ -79,7 +79,9 @@ class LoadDataset(Dataset):
         if random_flip:
             self.transforms += [transforms.RandomHorizontalFlip()]
 
-        self.transforms += [transforms.ToTensor(), transforms.Normalize(self.norm_mean, self.norm_std)]
+        self.transforms += [transforms.ToTensor()]
+        if normalize:
+            self.transforms += [transforms.Normalize(self.norm_mean, self.norm_std)]
         self.transforms = transforms.Compose(self.transforms)
 
         self.load_dataset()
