@@ -147,6 +147,8 @@ class make_worker(object):
         self.bn_stat_OnTheFly = bn_stat_OnTheFly
         self.print_every = cfgs.print_every
         self.save_every = cfgs.save_every
+        self.keep_ckpts = cfgs.keep_ckpts
+
         self.checkpoint_dir = checkpoint_dir
         self.evaluate = cfgs.eval
         self.mu = mu
@@ -524,6 +526,12 @@ class make_worker(object):
         torch.save(g_states, g_checkpoint_output_path)
         torch.save(d_states, d_checkpoint_output_path)
 
+        if self.keep_ckpts:
+            g_checkpoint_output_path = join(self.checkpoint_dir, f"model=G-weights-step={step}.pth")
+            d_checkpoint_output_path = join(self.checkpoint_dir, f"model=D-weights-step={step}.pth")
+            torch.save(g_states, g_checkpoint_output_path)
+            torch.save(d_states, d_checkpoint_output_path)
+
         if when == "best":
             if len(glob.glob(join(self.checkpoint_dir,"model=G-current-weights-step*.pth"))) >= 1:
                 find_and_remove(glob.glob(join(self.checkpoint_dir,"model=G-current-weights-step*.pth"))[0])
@@ -543,6 +551,10 @@ class make_worker(object):
             g_ema_checkpoint_output_path = join(self.checkpoint_dir, "model=G_ema-{when}-weights-step={step}.pth".format(when=when, step=str(step)))
 
             torch.save(g_ema_states, g_ema_checkpoint_output_path)
+
+            if self.keep_ckpts:
+                g_ema_checkpoint_output_path = join(self.checkpoint_dir, f"model=G_ema-weights-step={step}.pth")
+                torch.save(g_ema_states, g_ema_checkpoint_output_path)
 
             if when == "best":
                 if len(glob.glob(join(self.checkpoint_dir,"model=G_ema-current-weights-step*.pth".format(when=when)))) >= 1:
