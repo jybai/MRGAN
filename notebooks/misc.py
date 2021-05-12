@@ -5,6 +5,7 @@ if os.path.abspath('../src/') not in sys.path:
 import json
 import numpy as np
 from argparse import ArgumentParser
+from matplotlib import pyplot as plt
 from scipy.special import softmax
 
 import torch
@@ -16,38 +17,106 @@ from torch.utils.data import DataLoader
 from utils.misc import dict2clsattr
 from utils.sample import sample_latents
 
-def project(generator, model, to_numpy=True, n_samples=10000, return_logits=True):
+def visualize_samples(sampler):
+    with torch.no_grad():
+        x, y = next(sampler)
+    x = (x.detach().cpu().numpy().transpose(0, 2, 3, 1) + 1) / 2
+    n_dims = np.floor(np.sqrt(x.shape[0])).astype(np.int)
+    margin = 5
+    img = np.zeros((x.shape[1] * n_dims + margin * (n_dims - 1),
+                    x.shape[1] * n_dims + margin * (n_dims - 1),
+                    x.shape[-1]))
+
+    for i, x_ in enumerate(x):
+        c, r = i % n_dims, i // n_dims
+        img[c * (margin + x.shape[1]):c * margin + (c + 1) * x.shape[1], 
+            r * (margin + x.shape[2]):r * margin + (r + 1) * x.shape[2]] = x_
+        if i == n_dims**2 - 1:
+            break
+    plt.figure(figsize=(20, 20))
+    plt.imshow(img)
+
+def visualize_1nns(sampler, dl, proj_model, conditional=True, return_indices=False):
+    ref_x, ref_feat, _ = project(dl, proj_model, n_samples=None, to_numpy=True,
+                                 return_logits=None if not conditional else True)
+    
+    x, gen_feat, _ = project(sampler, proj_model, n_samples=50, to_numpy=True,
+                             return_logits=None if not conditional else True)
+    x = (x.transpose(0, 2, 3, 1) + 1) / 2
+    
+    nnds, nn_indices = calculate_knnd_numpy(target_feats=gen_feat, ref_feats=ref_feat)
+    
+    n_dims = np.floor(np.sqrt(x.shape[0])).astype(np.int)
+    margin = 5
+    img = np.zeros((x.shape[1] * n_dims + margin * (n_dims - 1),
+                    x.shape[2] * n_dims * 2 + margin * (n_dims - 1),
+                    x.shape[-1]))
+    
+    for i, (x_, nn_index) in enumerate(zip(x, nn_indices)):
+        nn_img = (ref_x[nn_index].transpose(1, 2, 0) + 1) / 2
+        c, r = i % n_dims, i // n_dims
+        img[c * margin + c * x.shape[1]:c * margin + (c + 1) * x.shape[1], 
+            r * margin + 2 * r * x.shape[2]:r * margin + (2 * r + 1) * x.shape[2]] = x_
+        img[c * margin + c * x.shape[1]:c * margin + (c + 1) * x.shape[1], 
+            r * margin + (2 * r + 1) * x.shape[2]:r * margin + (2 * r + 2) * x.shape[2]] = nn_img
+        if i == n_dims**2 - 1:
+            break
+    plt.figure(figsize=(20, 40))
+    plt.imshow(img)
+    
+    if return_indices:
+        return nnds, nn_indices
+    else:
+        return nnds
+
+def project(generator, model, n_samples, to_numpy=True, return_logits=True):
     model = model.eval()
     device = next(model.parameters()).device # https://discuss.pytorch.org/t/how-to-check-if-model-is-on-cuda/180/9
-    embs, logits = [], []
+    xs, embs, logits = [], [], []
     n_samples_now = 0
     with torch.no_grad():
         for x, y in generator:
             x = x.to(device) # expect value range = [-1, 1]
-            _embs, _logits = model(x)
-            _embs, _logits = _embs.detach(), _logits.detach()
-            if to_numpy:
-                _embs, _logits = _embs.cpu().numpy(), _logits.cpu().numpy()
+            if return_logits is None:
+                _embs = model(x).detach()
+                if to_numpy:
+                    x, _embs = x.cpu().numpy(), _embs.cpu().numpy()
+            else:
+                _embs, _logits = model(x)
+                _embs, _logits = _embs.detach(), _logits.detach()
+                if to_numpy:
+                    x, _embs, _logits = x.cpu().numpy(), _embs.cpu().numpy(), _logits.cpu().numpy()
+            
+            xs.append(x)
             embs.append(_embs)
-            logits.append(_logits)
+            
+            if return_logits is not None:
+                logits.append(_logits)
             
             n_samples_now += x.shape[0]
-            if n_samples_now >= n_samples:
+            if n_samples is not None and n_samples_now >= n_samples:
+                xs, embs, logits = xs[:n_samples], embs[:n_samples], logits[:n_samples]
                 break
         if to_numpy:
+            xs = np.concatenate(xs, axis=0)
             embs = np.concatenate(embs, axis=0)
-            logits = np.concatenate(logits, axis=0)
+            if return_logits is not None:
+                logits = np.concatenate(logits, axis=0)
         else:
+            xs = torch.cat(xs, dim=0)
             embs = torch.cat(embs, dim=0)
-            logits = torch.cat(logits, dim=0)
-    if return_logits:
-        return embs[:n_samples], logits[:n_samples]
+            if return_logits is not None:
+                logits = torch.cat(logits, dim=0)
+    if return_logits is None:
+        return xs, embs, None
+    elif return_logits:
+        return xs, embs, logits
     else:
         if to_numpy:
             probs = softmax(logits, axis=1)
         else:
             probs = F.softmax(logits, dim=1)
-        return embs[:n_samples], probs[:n_samples]
+        return xs, embs, probs
 
 def calculate_knnd_numpy(target_feats, ref_feats, k=1):
     target_feats = target_feats / np.linalg.norm(target_feats, axis=1, keepdims=True)
@@ -157,3 +226,38 @@ def _load_default_train_args():
     parser.add_argument('--eval_type', type=str, default='test', help='[train/valid/test]')
     args = parser.parse_args('')
     return vars(args)
+
+def load_model(model, pretrained_path, load_to_cpu):
+    '''Load from test_widerface.py
+    '''
+    def check_keys(model, pretrained_state_dict):
+        ckpt_keys = set(pretrained_state_dict.keys())
+        model_keys = set(model.state_dict().keys())
+        used_pretrained_keys = model_keys & ckpt_keys
+        unused_pretrained_keys = ckpt_keys - model_keys
+        missing_keys = model_keys - ckpt_keys
+        print('Missing keys:{}'.format(len(missing_keys)))
+        print('Unused checkpoint keys:{}'.format(len(unused_pretrained_keys)))
+        print('Used keys:{}'.format(len(used_pretrained_keys)))
+        assert len(used_pretrained_keys) > 0, 'load NONE from pretrained checkpoint'
+        return True
+
+
+    def remove_prefix(state_dict, prefix):
+        ''' Old style model is stored with all names of parameters sharing common prefix 'module.' '''
+        print('remove prefix \'{}\''.format(prefix))
+        f = lambda x: x.split(prefix, 1)[-1] if x.startswith(prefix) else x
+        return {f(key): value for key, value in state_dict.items()}
+    print('Loading pretrained model from {}'.format(pretrained_path))
+    if load_to_cpu:
+        pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage)
+    else:
+        device = torch.cuda.current_device()
+        pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage.cuda(device))
+    if "state_dict" in pretrained_dict.keys():
+        pretrained_dict = remove_prefix(pretrained_dict['state_dict'], 'module.')
+    else:
+        pretrained_dict = remove_prefix(pretrained_dict, 'module.')
+    check_keys(model, pretrained_dict)
+    model.load_state_dict(pretrained_dict, strict=False)
+    return model

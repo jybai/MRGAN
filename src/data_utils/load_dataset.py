@@ -66,7 +66,7 @@ class LoadDataset(Dataset):
         self.norm_std = [0.5,0.5,0.5]
 
         if self.hdf5_path is None:
-            if self.dataset_name in ['cifar10', 'tiny_imagenet']:
+            if self.dataset_name in ['cifar10', 'tiny_imagenet', 'celeba-hq_64', 'celeba-hq_128']:
                 self.transforms = []
             elif self.dataset_name in ['imagenet', 'custom']:
                 if train:
@@ -119,6 +119,28 @@ class LoadDataset(Dataset):
             else:
                 mode = 'train' if self.train == True else 'valid'
                 root = os.path.join('data','TINY_ILSVRC2012', mode)
+                self.data = ImageFolder(root=root)
+
+        elif self.dataset_name == "celeba-hq_128":
+            if self.hdf5_path is not None:
+                print('Loading %s into memory...' % self.hdf5_path)
+                with h5.File(self.hdf5_path, 'r') as f:
+                    self.data = f['imgs'][:]
+                    self.labels = f['labels'][:]
+            else:
+                mode = 'train' if self.train == True else 'valid'
+                root = os.path.join('data','CELEBA-HQ_128', mode)
+                self.data = ImageFolder(root=root)
+
+        elif self.dataset_name == "celeba-hq_64":
+            if self.hdf5_path is not None:
+                print('Loading %s into memory...' % self.hdf5_path)
+                with h5.File(self.hdf5_path, 'r') as f:
+                    self.data = f['imgs'][:]
+                    self.labels = f['labels'][:]
+            else:
+                mode = 'train' if self.train == True else 'valid'
+                root = os.path.join('data','CELEBA-HQ_64', mode)
                 self.data = ImageFolder(root=root)
 
         elif self.dataset_name == "custom":

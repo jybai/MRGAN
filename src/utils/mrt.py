@@ -80,7 +80,7 @@ class MemMaskGenerator():
         pass
         
     def __call__(self, target_tensor, target_labels, 
-                 gated=True, accu_stats=True):
+                 return_gated=False, accu_stats=True):
         target_emb = self.compute_embedding(target_tensor)
         nnd = self.compute_nnd(target_emb)
 
@@ -88,14 +88,15 @@ class MemMaskGenerator():
             self.accu_nnds.append(nnd.detach().cpu().numpy())
             self.accu_labels.append(target_labels.detach().cpu().numpy())
 
-        if not gated:
-            return nnd
+        if isinstance(self.t, float):
+            t = self.t
         else:
-            if isinstance(self.t, float):
-                t = self.t
-            else:
-                t = self.t[target_labels]
-            mask = nnd > t
+            t = self.t[target_labels]
+        mask = nnd > t
+
+        if return_gated:
+            return mask, nnd
+        else:
             return mask
         
 class NormalizationWrapper(torch.nn.Module):
@@ -138,16 +139,10 @@ class SplitInceptionv3(torch.nn.Module):
             back_out = self.back_half(front_out)
             return front_out, back_out
 
-def prepare_default_mmg(mrt, mrq, device, vanilla_train_dset):
+def prepare_default_mmg(proj_model, mrt, mrq, device, vanilla_train_dset):
     # cifar10_train = torchvision.datasets.CIFAR10(root='./data/cifar', train=True,
     #                                              download=True, transform=transforms.ToTensor())
     train_feats = torch.stack([x for x, _ in vanilla_train_dset], dim=0)
-    
-    inceptionv3_proj = SplitInceptionv3()
-    inceptionv3_proj.eval()
-    proj_model = NormalizationWrapper(inceptionv3_proj, mu=[0.485, 0.456, 0.406],
-                                      std=[0.229, 0.224, 0.225], img_dim=299).to(device)
-    
     mmg = MemMaskGenerator(mrt, proj_model, train_feats, device, q=mrq)
     return mmg
 

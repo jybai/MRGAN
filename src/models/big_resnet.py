@@ -92,8 +92,12 @@ class Generator(nn.Module):
         bottom_collection = {"32": 4, "64": 4, "128": 4, "256": 4, "512": 4}
 
         self.z_dim = z_dim
-        self.shared_dim = shared_dim
+        self.unconditional = True if conditional_strategy == 'no' else False
         self.num_classes = num_classes
+
+        if not self.unconditional:
+            self.shared_dim = shared_dim
+
         self.mixed_precision = mixed_precision
         conditional_bn = True if conditional_strategy in ["ACGAN", "ProjGAN", "ContraGAN", "Proxy_NCA_GAN", "NT_Xent_GAN"] else False
 
@@ -102,15 +106,17 @@ class Generator(nn.Module):
         self.bottom = bottom_collection[str(img_size)]
         self.n_blocks = len(self.in_dims)
         self.chunk_size = z_dim//(self.n_blocks+1)
-        self.z_dims_after_concat = self.chunk_size + self.shared_dim
         assert self.z_dim % (self.n_blocks+1) == 0, "z_dim should be divided by the number of blocks "
+
+        self.z_dims_after_concat = self.chunk_size if self.unconditional else self.chunk_size + self.shared_dim
 
         if g_spectral_norm:
             self.linear0 = snlinear(in_features=self.chunk_size, out_features=self.in_dims[0]*self.bottom*self.bottom)
         else:
             self.linear0 = linear(in_features=self.chunk_size, out_features=self.in_dims[0]*self.bottom*self.bottom)
 
-        self.shared = embedding(self.num_classes, self.shared_dim)
+        if not self.unconditional:
+            self.shared = embedding(self.num_classes, self.shared_dim)
 
         self.blocks = []
         for index in range(self.n_blocks):
@@ -155,11 +161,15 @@ class Generator(nn.Module):
         with torch.cuda.amp.autocast() if self.mixed_precision is True and evaluation is False else dummy_context_mgr() as mp:
             zs = torch.split(z, self.chunk_size, 1)
             z = zs[0]
-            if shared_label is None:
-                shared_label = self.shared(label)
+
+            if self.unconditional:
+                labels = [item for item in zs[1:]]
             else:
-                pass
-            labels = [torch.cat([shared_label, item], 1) for item in zs[1:]]
+                if shared_label is None:
+                    shared_label = self.shared(label)
+                else:
+                    pass
+                labels = [torch.cat([shared_label, item], 1) for item in zs[1:]]
 
             act = self.linear0(z)
             act = act.view(-1, self.in_dims[0], self.bottom, self.bottom)

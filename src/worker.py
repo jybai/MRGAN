@@ -50,7 +50,8 @@ LOG_FORMAT = (
     "ada_p: {ada_p:<.6} "
     "Discriminator_loss: {dis_loss:<.6} "
     "Generator_loss: {gen_loss:<.6} "
-    "mar: {mar:<.3}"
+    "mar: {mar:<.3} "
+    "nnd: {nnd:<.3}"
 )
 
 
@@ -89,7 +90,7 @@ class make_worker(object):
         self.conditional_strategy = cfgs.conditional_strategy
         self.pos_collected_numerator = cfgs.pos_collected_numerator
         self.z_dim = cfgs.z_dim
-        self.num_classes = cfgs.num_classes
+        self.num_classes = None if cfgs.num_classes == 'N/A' else cfgs.num_classes
         self.hypersphere_dim = cfgs.hypersphere_dim
         self.d_spectral_norm = cfgs.d_spectral_norm
         self.g_spectral_norm = cfgs.g_spectral_norm
@@ -192,6 +193,8 @@ class make_worker(object):
             self.num_eval = {'train':50000, 'valid':10000}
         elif self.dataset_name == "cifar10":
             self.num_eval = {'train':50000, 'test':10000}
+        elif 'celeba-hq' in self.dataset_name:
+            self.num_eval = {'train':24183, 'test':5817}
         elif self.dataset_name == "custom":
             num_train_images, num_eval_images = len(self.train_dataset.data), len(self.eval_dataset.data)
             self.num_eval = {'train':num_train_images, 'valid':num_eval_images}
@@ -210,7 +213,7 @@ class make_worker(object):
         step_count = current_step
         train_iter = iter(self.train_dataloader)
 
-        mars = []
+        mars, avg_nnds = [], []
 
         self.ada_aug_p = self.adtv_aug.initialize() if self.ada else 'No'
         while step_count <= total_step:
@@ -379,22 +382,31 @@ class make_worker(object):
                 self.G_optimizer.zero_grad()
                 for acml_step in range(self.accumulation_steps):
                     with torch.cuda.amp.autocast() if self.mixed_precision else dummy_context_mgr() as mpc:
-                        if self.zcr:
-                            zs, fake_labels, zs_t = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
-                                                                   self.sigma_noise, self.local_rank)
-                        else:
-                            zs, fake_labels = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
-                                                             None, self.local_rank)
-                        if self.latent_op:
-                            zs, transport_cost = latent_optimise(zs, fake_labels, self.gen_model, self.dis_model, self.conditional_strategy,
-                                                                 self.latent_op_step, self.latent_op_rate, self.latent_op_alpha,
-                                                                 self.latent_op_beta, True, self.local_rank)
 
-                        fake_images = self.gen_model(zs, fake_labels)
-                        mask = self.mmg((fake_images.detach() + 1.) / 2., fake_labels).view(-1)
+                        while True:
+                            if self.zcr:
+                                zs, fake_labels, zs_t = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
+                                                                       self.sigma_noise, self.local_rank)
+                            else:
+                                zs, fake_labels = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
+                                                                 None, self.local_rank)
+                            if self.latent_op:
+                                zs, transport_cost = latent_optimise(zs, fake_labels, self.gen_model, self.dis_model, self.conditional_strategy,
+                                                                     self.latent_op_step, self.latent_op_rate, self.latent_op_alpha,
+                                                                     self.latent_op_beta, True, self.local_rank)
+
+                            fake_images = self.gen_model(zs, fake_labels)
+                            mask, nnd = self.mmg((fake_images.detach() + 1.) / 2., fake_labels, return_gated=True)
+                            mask = mask.view(-1)
+                            nnd = nnd.view(-1)
+
+                            if torch.sum(mask.float()).item() > 0:
+                                break
+
                         fake_images = fake_images[mask]
                         fake_labels = fake_labels[mask]
                         mars.append(torch.sum(mask.float()).item() / mask.shape[0])
+                        avg_nnds.append(torch.mean(nnd).item())
 
                         if self.diff_aug:
                             fake_images = DiffAugment(fake_images, policy=self.policy)
@@ -463,6 +475,7 @@ class make_worker(object):
                                                 dis_loss=dis_acml_loss.item(),
                                                 gen_loss=gen_acml_loss.item(),
                                                 mar=np.mean(mars),
+                                                nnd=np.mean(avg_nnds),
                                                 )
                 self.logger.info(log_message)
 
@@ -475,8 +488,9 @@ class make_worker(object):
                 if self.ada:
                     self.writer.add_scalar('ada_p', self.ada_aug_p, step_count)
                 self.writer.add_scalar('mar', np.mean(mars), step_count)
+                self.writer.add_scalar('nnd', np.mean(avg_nnds), step_count)
                 # reset
-                mars = []
+                mars, avg_nnds = [], []
 
             if step_count % self.save_every == 0 or step_count == total_step:
                 if self.evaluate:

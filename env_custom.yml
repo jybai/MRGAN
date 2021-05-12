@@ -1,6 +1,7 @@
 channels:
   - pytorch
   - defaults
+  - conda-forge
 dependencies:
   - python>=3.6
   - scipy=1.6.1
@@ -10,8 +11,12 @@ dependencies:
   - tqdm
   - pytorch=1.6
   - torchvision>=0.7.0
+  - cudatoolkit=10.2
   - tensorboard
   - jupyter
   - pip
   - pip:
     - torchlars
+    - opencv-python
+    - pretrainedmodels
+    - gputil
