@@ -235,20 +235,35 @@ class make_worker(object):
                         if self.diff_aug:
                             real_images = DiffAugment(real_images, policy=self.policy)
                         if self.ada:
-                            real_images, _ = augment(real_images, self.ada_aug_p)
+                            real_images, _ = augment(real_images, self.ada_aug_p) 
 
-                        if self.zcr:
-                            zs, fake_labels, zs_t = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
-                                                                   self.sigma_noise, self.local_rank)
-                        else:
-                            zs, fake_labels = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
-                                                             None, self.local_rank)
-                        if self.latent_op:
-                            zs = latent_optimise(zs, fake_labels, self.gen_model, self.dis_model, self.conditional_strategy,
-                                                 self.latent_op_step, self.latent_op_rate, self.latent_op_alpha, self.latent_op_beta,
-                                                 False, self.local_rank)
+                        while True:
+                            if self.zcr:
+                                zs, fake_labels, zs_t = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
+                                                                       self.sigma_noise, self.local_rank)
+                            else:
+                                zs, fake_labels = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
+                                                                 None, self.local_rank)
+                            if self.latent_op:
+                                zs, transport_cost = latent_optimise(zs, fake_labels, self.gen_model, self.dis_model, self.conditional_strategy,
+                                                                     self.latent_op_step, self.latent_op_rate, self.latent_op_alpha,
+                                                                     self.latent_op_beta, False, self.local_rank)
 
-                        fake_images = self.gen_model(zs, fake_labels)
+                            fake_images = self.gen_model(zs, fake_labels)
+
+                            if self.cfgs.train_configs['mr'] == "GD":
+                                with torch.no_grad():
+                                    mask, nnd = self.mmg((fake_images.detach() + 1.) / 2., fake_labels, return_gated=True)
+                                mask = mask.view(-1)
+                                nnd = nnd.view(-1)
+
+                                if torch.sum(mask.float()).item() > 0:
+                                    fake_images, fake_labels = fake_images[mask], fake_labels[mask]
+                                    real_images, real_labels = real_images[mask], real_labels[mask] # apply same mask to maintain real/fake balance
+                                    break
+                            else:
+                                break
+
                         if self.diff_aug:
                             fake_images = DiffAugment(fake_images, policy=self.policy)
                         if self.ada:
@@ -396,17 +411,21 @@ class make_worker(object):
                                                                      self.latent_op_beta, True, self.local_rank)
 
                             fake_images = self.gen_model(zs, fake_labels)
-                            mask, nnd = self.mmg((fake_images.detach() + 1.) / 2., fake_labels, return_gated=True)
-                            mask = mask.view(-1)
-                            nnd = nnd.view(-1)
 
-                            if torch.sum(mask.float()).item() > 0:
+                            if self.cfgs.train_configs['mr'] == "G" or self.cfgs.train_configs['mr'] == "GD":
+                                with torch.no_grad():
+                                    mask, nnd = self.mmg((fake_images.detach() + 1.) / 2., fake_labels, return_gated=True)
+                                mask = mask.view(-1)
+                                nnd = nnd.view(-1)
+
+                                if torch.sum(mask.float()).item() > 0:
+                                    fake_images, fake_labels = fake_images[mask], fake_labels[mask]
+                                    mars.append(torch.sum(mask.float()).item() / mask.shape[0])
+                                    avg_nnds.append(torch.mean(nnd).item())
+                                    break
+                            else:
                                 break
 
-                        fake_images = fake_images[mask]
-                        fake_labels = fake_labels[mask]
-                        mars.append(torch.sum(mask.float()).item() / mask.shape[0])
-                        avg_nnds.append(torch.mean(nnd).item())
 
                         if self.diff_aug:
                             fake_images = DiffAugment(fake_images, policy=self.policy)
@@ -424,6 +443,17 @@ class make_worker(object):
                             raise NotImplementedError
 
                         gen_acml_loss = self.G_loss(dis_out_fake)
+
+                        if self.cfgs.train_configs['mo'] == "G":
+                            mask, nnd = self.mmg((fake_images + 1.) / 2., fake_labels, return_gated=True)
+                            mask = mask.view(-1)
+                            nnd = nnd.view(-1)
+
+                            mars.append(torch.sum(mask.float()).item() / mask.shape[0])
+                            avg_nnds.append(torch.mean(nnd).item())
+
+                            mem_dist_loss = torch.sum(nnd * (~mask).float()) / nnd.shape[0]
+                            gen_acml_loss += mem_dist_loss*self.cfgs.train_configs['mo_weight']
 
                         if self.latent_op:
                             gen_acml_loss += transport_cost*self.latent_norm_reg_weight
@@ -467,6 +497,9 @@ class make_worker(object):
                 step_count += 1
 
             if step_count % self.print_every == 0 and self.global_rank == 0:
+
+                is_log_mr = self.cfgs.train_configs['mr'] is not None or self.cfgs.train_configs['mo'] is not None
+
                 log_message = LOG_FORMAT.format(step=step_count,
                                                 progress=step_count/total_step,
                                                 elapsed=elapsed_time(self.start_time),
@@ -474,8 +507,8 @@ class make_worker(object):
                                                 ada_p=self.ada_aug_p,
                                                 dis_loss=dis_acml_loss.item(),
                                                 gen_loss=gen_acml_loss.item(),
-                                                mar=np.mean(mars),
-                                                nnd=np.mean(avg_nnds),
+                                                mar=np.nan if not is_log_mr else np.mean(mars),
+                                                nnd=np.nan if not is_log_mr else np.mean(avg_nnds),
                                                 )
                 self.logger.info(log_message)
 

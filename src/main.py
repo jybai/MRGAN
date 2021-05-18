@@ -14,10 +14,11 @@ import GPUtil
 from time import sleep
 
 def wait_available_gpu():
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    DEVICE_ID_LIST = GPUtil.getFirstAvailable(maxMemory=0.1, interval=300, attempts=100000)
-    print(f"use gpu id = {DEVICE_ID_LIST[0]}")
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(DEVICE_ID_LIST[0])
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        DEVICE_ID_LIST = GPUtil.getFirstAvailable(maxMemory=0.1, interval=300, attempts=100000)
+        print(f"use gpu id = {DEVICE_ID_LIST[0]}")
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(DEVICE_ID_LIST[0])
 wait_available_gpu()
 
 from utils.misc import *
@@ -37,12 +38,22 @@ RUN_NAME_FORMAT = (
     "{timestamp}"
 )
 
+def none_or_str(value):
+    if value == 'None':
+        return None
+    return value
+
 def main():
 
     parser = ArgumentParser(add_help=False)
 
+    parser.add_argument('--mr', type=none_or_str, default="G", choices=["G", "GD", None])
     parser.add_argument('--mrt', type=float, default=0.0, help='memorization rejection threshold')
     parser.add_argument('--mr_model', type=str, default="imagenet_inception_v3", help='memorization rejection projection model')
+
+    parser.add_argument('--mo', type=none_or_str, default=None, choices=["G", None])
+    parser.add_argument('--mot', type=float, default=0.0, help='memorization optimization threshold')
+    parser.add_argument('--mo_weight', type=float, default=0.0, help='memorization optimization loss weight')
 
     parser.add_argument('-c', '--config_path', type=str, default='./src/configs/CIFAR10/ContraGAN.json')
     parser.add_argument('--checkpoint_folder', type=str, default=None)

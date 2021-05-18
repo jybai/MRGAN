@@ -57,20 +57,18 @@ class MemMaskGenerator():
     
     def compute_embedding(self, target_tensor, bsize=64):
         target_emb = [] 
-        with torch.no_grad():
-            for index in range(0, target_tensor.shape[0], bsize):
-                target_batch = target_tensor[index:index + bsize].to(self.device)
-                target_emb_ = self.proj_model(target_batch)
-                target_emb.append(target_emb_)
-            target_emb = torch.cat(target_emb, dim=0)
-            target_emb = torch.div(target_emb,
-                                   torch.norm(target_emb, dim=1, keepdim=True))
+        for index in range(0, target_tensor.shape[0], bsize):
+            target_batch = target_tensor[index:index + bsize].to(self.device)
+            target_emb_ = self.proj_model(target_batch)
+            target_emb.append(target_emb_)
+        target_emb = torch.cat(target_emb, dim=0)
+        target_emb = torch.div(target_emb,
+                               torch.norm(target_emb, dim=1, keepdim=True))
         return target_emb
     
     def compute_nnd(self, target_emb, return_ref_indices=False):
-        with torch.no_grad():
-            d = 1.0 - torch.abs(torch.mm(target_emb, self.ref_emb.T))
-            min_d, min_ref_indices = torch.min(d, dim=1, keepdim=True)
+        d = 1.0 - torch.abs(torch.mm(target_emb, self.ref_emb.T))
+        min_d, min_ref_indices = torch.min(d, dim=1, keepdim=True)
         if return_ref_indices:
             return min_d, min_ref_indices
         else:

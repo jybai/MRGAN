@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn import Parameter as P
 from torchvision.models.utils import load_state_dict_from_url
 from typing import Any
@@ -8,7 +9,7 @@ class WrappedAlexNet(nn.Module):
     def __init__(self, net=None, custom_num_classes=None, img_size=224):
         super(WrappedAlexNet, self).__init__()
         if net is None:
-            self.net = AlexNet(pretrained=True)
+            self.net = alexnet(pretrained=True)
         else:
             self.net = net
         for param in self.net.parameters():
@@ -28,7 +29,7 @@ class WrappedAlexNet(nn.Module):
         for param in self.net.parameters():
             if param.requires_grad:
                 print(param.name, end='\t')
-        print('#####')
+        print('\n#####')
 
     def forward(self, x):
         # Normalize x

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn import Parameter as P
 from torchvision.models.utils import load_state_dict_from_url
 
@@ -25,7 +26,7 @@ class WrappedVGG(nn.Module):
         for param in self.net.parameters():
             if param.requires_grad:
                 print(param.name, end='\t')
-        print('#####')
+        print('\n#####')
 
     def forward(self, x):
         # Normalize x

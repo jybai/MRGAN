@@ -3,6 +3,7 @@ import sys
 if os.path.abspath('../src/') not in sys.path:
     sys.path.insert(0, os.path.abspath('../src/'))
 import json
+import glob
 import numpy as np
 from argparse import ArgumentParser
 from matplotlib import pyplot as plt
@@ -16,6 +17,68 @@ from torch.utils.data import DataLoader
 
 from utils.misc import dict2clsattr
 from utils.sample import sample_latents
+
+def build_cache(runname, sampler, cache_dir, conditional, which_epoch='best', n_samples=50000, 
+                proj_model=None, verbose=False):
+    cache_path = os.path.join(cache_dir, runname)
+    os.makedirs(cache_path, exist_ok=True)
+    
+    if verbose:
+        print(f"cache to {os.path.join(cache_path, f'{which_epoch}.npz')}")
+    
+    if proj_model is None:
+        xs, ys = [], []
+        n_samples_now = 0
+        with torch.no_grad():
+            for x, y in sampler:
+                xs.append(x.detach().cpu().numpy())
+                ys.append(y.detach().cpu().numpy())
+                n_samples_now += x.shape[0]
+                
+                if n_samples_now >= n_samples:
+                    break
+        xs = np.concatenate(xs, axis=0)[:n_samples]
+        ys = np.concatenate(ys, axis=0)[:n_samples]
+        
+        np.savez_compressed(os.path.join(cache_path, f'{which_epoch}.npz'), 
+                            **{'X': xs, 'Y': ys})
+        
+        if verbose:
+            print(xs.shape, ys.shape)
+        
+        del xs, ys
+    else:   
+        (xs, ys), feats, _ = project(sampler, proj_model, n_samples=n_samples, to_numpy=True, 
+                                     return_logits=False if conditional else None)
+        
+        proj_model_name = proj_model.__class__.__name__
+        np.savez_compressed(os.path.join(cache_path, f'{which_epoch}.npz'), 
+                            **{'X': xs, 'Y': ys, proj_model_name: feats})
+        
+        if verbose:
+            print(xs.shape, ys.shape, feats.shape)
+            
+        del xs, ys, feats, _
+
+def wrapper_all(runname, dset_name, **kwargs):
+    if len(glob.glob(f'../checkpoints/{runname}/model=G_ema-weights-step=*.pth')) > 0:
+        g_paths = glob.glob(f'../checkpoints/{runname}/model=G_ema-weights-step=*.pth')
+    else:
+        g_paths = glob.glob(f'../checkpoints/{runname}/model=G-weights-step=*.pth')
+    config_path = f"../src/configs/{dset_name}/{runname.split('-')[0]}.json"
+    samplers = {int(g_path.split('/')[-1].split('=')[-1].split('.')[0]): 
+                construct_sampler(g_path, config_path, **kwargs) 
+                for g_path in g_paths}
+    return samplers
+
+def wrapper_best(runname, dset_name, **kwargs):
+    if len(glob.glob(f'../checkpoints/{runname}/model=G_ema-best-weights-step=*.pth')) > 0:
+        ema_g_path = glob.glob(f'../checkpoints/{runname}/model=G_ema-best-weights-step=*.pth')[0]
+    else:
+        ema_g_path = glob.glob(f'../checkpoints/{runname}/model=G-best-weights-step=*.pth')[0]
+    config_path = f"../src/configs/{dset_name}/{runname.split('-')[0]}.json"
+    sampler = construct_sampler(ema_g_path, config_path, **kwargs)
+    return sampler
 
 def visualize_samples(sampler):
     with torch.no_grad():
@@ -72,7 +135,7 @@ def visualize_1nns(sampler, dl, proj_model, conditional=True, return_indices=Fal
 def project(generator, model, n_samples, to_numpy=True, return_logits=True):
     model = model.eval()
     device = next(model.parameters()).device # https://discuss.pytorch.org/t/how-to-check-if-model-is-on-cuda/180/9
-    xs, embs, logits = [], [], []
+    xs, ys, embs, logits = [], [], [], []
     n_samples_now = 0
     with torch.no_grad():
         for x, y in generator:
@@ -80,14 +143,15 @@ def project(generator, model, n_samples, to_numpy=True, return_logits=True):
             if return_logits is None:
                 _embs = model(x).detach()
                 if to_numpy:
-                    x, _embs = x.cpu().numpy(), _embs.cpu().numpy()
+                    x, y, _embs = x.cpu().numpy(), y.cpu().numpy(), _embs.cpu().numpy()
             else:
                 _embs, _logits = model(x)
                 _embs, _logits = _embs.detach(), _logits.detach()
                 if to_numpy:
-                    x, _embs, _logits = x.cpu().numpy(), _embs.cpu().numpy(), _logits.cpu().numpy()
+                    x, y, _embs, _logits = x.cpu().numpy(), y.cpu().numpy(), _embs.cpu().numpy(), _logits.cpu().numpy()
             
             xs.append(x)
+            ys.append(y)
             embs.append(_embs)
             
             if return_logits is not None:
@@ -95,46 +159,64 @@ def project(generator, model, n_samples, to_numpy=True, return_logits=True):
             
             n_samples_now += x.shape[0]
             if n_samples is not None and n_samples_now >= n_samples:
-                xs, embs, logits = xs[:n_samples], embs[:n_samples], logits[:n_samples]
+                # xs, embs, logits = xs[:n_samples], embs[:n_samples], logits[:n_samples]
                 break
         if to_numpy:
             xs = np.concatenate(xs, axis=0)
+            ys = np.concatenate(ys, axis=0)
             embs = np.concatenate(embs, axis=0)
             if return_logits is not None:
                 logits = np.concatenate(logits, axis=0)
         else:
             xs = torch.cat(xs, dim=0)
+            ys = torch.cat(ys, dim=0)
             embs = torch.cat(embs, dim=0)
             if return_logits is not None:
                 logits = torch.cat(logits, dim=0)
     if return_logits is None:
-        return xs, embs, None
+        return (xs, ys), embs, None
     elif return_logits:
-        return xs, embs, logits
+        return (xs, ys), embs, logits
     else:
         if to_numpy:
             probs = softmax(logits, axis=1)
         else:
             probs = F.softmax(logits, dim=1)
-        return xs, embs, probs
+        return (xs, ys), embs, probs
 
-def calculate_knnd_numpy(target_feats, ref_feats, k=1):
+def calculate_knnd_numpy(target_feats, ref_feats, k=1, return_indices=True, use_partition=True):
     target_feats = target_feats / np.linalg.norm(target_feats, axis=1, keepdims=True)
     ref_feats = ref_feats / np.linalg.norm(ref_feats, axis=1, keepdims=True)
     d = 1.0 - np.matmul(target_feats, ref_feats.T)
-    idx = np.argsort(d, axis=1)
-    d = np.sort(d, axis=1)
-    return d[:, 0], idx[:, 0]
+    # already checked has same result but partition significantly faster
+    if use_partition:
+        idx = np.argpartition(d, k, axis=1)[:, :k]
+        sorted_part_rel_idx = np.argsort(np.take_along_axis(d, idx, axis=1), axis=1)
+        idx = np.take_along_axis(idx, sorted_part_rel_idx, axis=1)
+        idx = np.expand_dims(idx[:, -1], -1)
+        d = np.take_along_axis(d, idx, axis=1)
+        idx = np.squeeze(idx)
+        d = np.squeeze(d)
+    else:
+        idx = np.argsort(d, axis=1)[:, k - 1]
+        d = np.sort(d, axis=1)[:, k - 1]
+    if return_indices:
+        return d, idx
+    else:
+        return d
 
-def calculate_knnd_torch(target_feats, ref_feats, k=1):
+def calculate_knnd_torch(target_feats, ref_feats, k=1, return_indices=True):
     with torch.no_grad():
         target_feats = torch.div(target_feats, torch.norm(target_feats, dim=1, keepdim=True))
         ref_feats = torch.div(ref_feats, torch.norm(ref_feats, dim=1, keepdim=True))
         d = 1.0 - torch.mm(target_feats, ref_feats.T)
         val, idx = torch.topk(d, k, largest=False, dim=1)
+    if return_indices:
         return val[:, -1], idx[:, -1]
+    else:
+        return val[:, -1]
 
-def construct_sampler(ema_g_path, config_path, device, bsize=50):
+def construct_sampler(ema_g_path, config_path, device, bsize=50, sample_mode="default"):
     def _sampler():
         train_configs = _load_default_train_args()
         with open(config_path) as f:
@@ -151,8 +233,10 @@ def construct_sampler(ema_g_path, config_path, device, bsize=50):
     
         while True:
             with torch.no_grad():
-                zs, fake_labels = sample_latents(cfgs.prior, bsize, G.z_dim, cfgs.truncated_factor, 
-                                                 G.num_classes, None, device)
+                zs, fake_labels = sample_latents(dist=cfgs.prior, batch_size=bsize, dim=G.z_dim, 
+                                                 truncated_factor=cfgs.truncated_factor, 
+                                                 num_classes=G.num_classes, perturb=None, 
+                                                 device=device, sampler=sample_mode)
                 batch_images = G(zs, fake_labels, evaluation=True)
                 yield batch_images, fake_labels
                 

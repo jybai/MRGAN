@@ -84,21 +84,29 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
     vanilla_train_dset = LoadDataset(cfgs.dataset_name, cfgs.data_path, train=True, download=True, 
                                      resize_size=cfgs.img_size, hdf5_path=hdf5_path_train, normalize=False) # range=[0, 1]
 
-    if cfgs.train_configs['mr_model'] == 'imagenet_inception_v3':
-        proj_model = NormalizationWrapper(SplitInceptionv3(), 
-                                          mu=[0.485, 0.456, 0.406],
-                                          std=[0.229, 0.224, 0.225], 
-                                          img_dim=299).eval().to(local_rank)
-    elif cfgs.train_configs['mr_model'] == 'reID_resnet50':
-        with open('Person_reID_baseline_pytorch/model/ft_ResNet50/opts.yaml', 'r') as stream:
-            config = yaml.safe_load(stream)
-        proj_model = gan_proj_ft_net(config['nclasses'], stride=config['stride'])
-        proj_model.load_state_dict(torch.load('Person_reID_baseline_pytorch/model/ft_ResNet50/net_last.pth'))
-        proj_model = proj_model.eval().to(local_rank)
+    if cfgs.train_configs['mr'] is not None or cfgs.train_configs['mo'] is not None:
+        if cfgs.train_configs['mr'] is not None and cfgs.train_configs['mo'] is not None:
+            raise Exception("Should not apply memorization rejection and optimzation at the same time")
+
+        if cfgs.train_configs['mr_model'] == 'imagenet_inception_v3':
+            proj_model = NormalizationWrapper(SplitInceptionv3(), 
+                                              mu=[0.485, 0.456, 0.406],
+                                              std=[0.229, 0.224, 0.225], 
+                                              img_dim=299).eval().to(local_rank)
+        elif cfgs.train_configs['mr_model'] == 'reID_resnet50':
+            with open('Person_reID_baseline_pytorch/model/ft_ResNet50/opts.yaml', 'r') as stream:
+                config = yaml.safe_load(stream)
+            proj_model = gan_proj_ft_net(config['nclasses'], stride=config['stride'])
+            proj_model.load_state_dict(torch.load('Person_reID_baseline_pytorch/model/ft_ResNet50/net_last.pth'))
+            proj_model = proj_model.eval().to(local_rank)
+        else:
+            raise NotImplementedError
+
+        with torch.no_grad():
+            mmg = prepare_default_mmg(proj_model, mrt=cfgs.train_configs['mrt'] if cfgs.train_configs['mr'] is not None else cfgs.train_configs['mot'],
+                                      mrq=None, device=local_rank, vanilla_train_dset=vanilla_train_dset)
     else:
-        raise NotImplementedError
- 
-    mmg = prepare_default_mmg(proj_model, mrt=cfgs.train_configs['mrt'], mrq=None, device=local_rank, vanilla_train_dset=vanilla_train_dset)
+        mmg = None
 
     ##### build model #####
     if local_rank == 0: logger.info('Build model...')
