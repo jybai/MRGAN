@@ -19,7 +19,7 @@ from utils.misc import dict2clsattr
 from utils.sample import sample_latents
 
 def build_cache(runname, sampler, cache_dir, conditional, which_epoch='best', n_samples=50000, 
-                proj_model=None, verbose=False):
+                proj_model=None, avoid_list=[], verbose=False):
     cache_path = os.path.join(cache_dir, runname)
     os.makedirs(cache_path, exist_ok=True)
     
@@ -40,8 +40,10 @@ def build_cache(runname, sampler, cache_dir, conditional, which_epoch='best', n_
         xs = np.concatenate(xs, axis=0)[:n_samples]
         ys = np.concatenate(ys, axis=0)[:n_samples]
         
+        data = {'X': xs, 'Y': ys}
+        
         np.savez_compressed(os.path.join(cache_path, f'{which_epoch}.npz'), 
-                            **{'X': xs, 'Y': ys})
+                            **{k: v for k, v in data.items() if k not in avoid_list})
         
         if verbose:
             print(xs.shape, ys.shape)
@@ -52,8 +54,10 @@ def build_cache(runname, sampler, cache_dir, conditional, which_epoch='best', n_
                                      return_logits=False if conditional else None)
         
         proj_model_name = proj_model.__class__.__name__
+        data = {'X': xs, 'Y': ys, proj_model_name: feats}
+        
         np.savez_compressed(os.path.join(cache_path, f'{which_epoch}.npz'), 
-                            **{'X': xs, 'Y': ys, proj_model_name: feats})
+                            **{k: v for k, v in data.items() if k not in avoid_list})
         
         if verbose:
             print(xs.shape, ys.shape, feats.shape)
