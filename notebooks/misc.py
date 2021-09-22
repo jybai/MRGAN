@@ -226,14 +226,7 @@ def construct_sampler(ema_g_path, config_path, device, bsize=50, sample_mode="de
         with open(config_path) as f:
             model_configs = json.load(f)
         cfgs = dict2clsattr(train_configs, model_configs)
-        module = __import__('models.{architecture}'.format(architecture=cfgs.architecture), fromlist=['something'])
-        G = module.Generator(cfgs.z_dim, cfgs.shared_dim, cfgs.img_size, cfgs.g_conv_dim, cfgs.g_spectral_norm, cfgs.attention,
-                             cfgs.attention_after_nth_gen_block, cfgs.activation_fn, cfgs.conditional_strategy, cfgs.num_classes,
-                             cfgs.g_init, cfgs.G_depth, cfgs.mixed_precision)
-
-        checkpoint = torch.load(ema_g_path)
-        G.load_state_dict(checkpoint['state_dict'])
-        G = G.eval().to(device)
+        G = construct_generator(config_path, device, ema_g_path)
     
         while True:
             with torch.no_grad():
@@ -245,6 +238,22 @@ def construct_sampler(ema_g_path, config_path, device, bsize=50, sample_mode="de
                 yield batch_images, fake_labels
                 
     return _sampler()
+
+def construct_generator(config_path, device, ema_g_path=None):
+    train_configs = _load_default_train_args()
+    with open(config_path) as f:
+        model_configs = json.load(f)
+    cfgs = dict2clsattr(train_configs, model_configs)
+    module = __import__('models.{architecture}'.format(architecture=cfgs.architecture), fromlist=['something'])
+    G = module.Generator(cfgs.z_dim, cfgs.shared_dim, cfgs.img_size, cfgs.g_conv_dim, cfgs.g_spectral_norm, cfgs.attention,
+                         cfgs.attention_after_nth_gen_block, cfgs.activation_fn, cfgs.conditional_strategy, cfgs.num_classes,
+                         cfgs.g_init, cfgs.G_depth, cfgs.mixed_precision)
+
+    if ema_g_path is not None:
+        checkpoint = torch.load(ema_g_path)
+        G.load_state_dict(checkpoint['state_dict'])
+    G = G.eval().to(device)
+    return G
 
 def calculate_IS(probs, splits=10):    
     scores = []

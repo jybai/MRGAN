@@ -29,7 +29,13 @@ runs = {
             0.15: ['DiffAugGAN(P)-train-2021_03_08_14_46_12', 'DiffAugGAN(P)-train-2021_03_21_11_38_59', 
                    'DiffAugGAN(P)-train-2021_04_06_00_25_51', 'DiffAugGAN(P)-train-2021_04_06_13_47_56'],
             0.16: ['DiffAugGAN(P)-train-2021_03_27_11_52_47', 'DiffAugGAN(P)-train-2021_03_23_16_50_02', 
-                   'DiffAugGAN(P)-train-2021_04_08_05_55_17', 'DiffAugGAN(P)-train-2021_04_03_16_19_34']}
+                   'DiffAugGAN(P)-train-2021_04_08_05_55_17', 'DiffAugGAN(P)-train-2021_04_03_16_19_34']},
+        'biggan_GD': {
+            0.15: ['BigGAN-train-2021_05_16_16_02_16'],
+            0.16: ['BigGAN-train-2021_05_17_19_48_21']},
+        'biggan_mot0.15': {
+            0.1: ['BigGAN_minmem-train-2021_05_17_21_49_45'],
+            0.01: ['BigGAN-train-2021_05_20_00_45_49']}
     },
     'CELEBA-HQ_128': {
         'biggan': {
