@@ -454,6 +454,16 @@ class make_worker(object):
 
                             mem_dist_loss = torch.sum(nnd * (~mask).float()) / nnd.shape[0]
                             gen_acml_loss += mem_dist_loss*self.cfgs.train_configs['mo_weight']
+                        elif self.cfgs.train_configs['mo'] == "G_mean_match":
+                            mask, nnd = self.mmg((fake_images + 1.) / 2., fake_labels, return_gated=True)
+                            mask = mask.view(-1)
+                            nnd = nnd.view(-1)
+
+                            mars.append(torch.sum(mask.float()).item() / mask.shape[0])
+                            avg_nnds.append(torch.mean(nnd).item())
+
+                            mem_dist_loss = (nnd - self.cfgs.train_configs['mot'])**2 / nnd.shape[0]
+                            gen_acml_loss += mem_dist_loss*self.cfgs.train_configs['mo_weight']
 
                         if self.latent_op:
                             gen_acml_loss += transport_cost*self.latent_norm_reg_weight

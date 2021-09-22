@@ -9,6 +9,49 @@ from torchvision.models.inception import inception_v3
 import torchvision
 import torchvision.transforms as transforms
 
+class ConditionalMaskGenerator():
+    def __init__(self, t, proj_model, ref_tensors, device, nns_device=None):
+        self.t = t
+        self.proj_model = proj_model.eval()
+        self.device = device
+        self.nns_device = device if nns_device is None else nns_device
+        
+        self.ref_embs = [self.compute_embedding(ref_tensor) for ref_tensor in ref_tensors]
+    
+    def compute_embedding(self, target_tensor, bsize=64):
+        target_emb = [] 
+        for index in range(0, target_tensor.shape[0], bsize):
+            target_batch = target_tensor[index:index + bsize].to(self.device)
+            target_emb_ = self.proj_model(target_batch).to(self.nns_device)
+            target_emb.append(target_emb_)
+        target_emb = torch.cat(target_emb, dim=0)
+        target_emb = torch.div(target_emb,
+                               torch.norm(target_emb, dim=1, keepdim=True))
+        return target_emb
+    
+    def compute_nnd(self, target_emb, target_label, return_ref_indices=False):
+        d = 1.0 - torch.abs(torch.mm(target_emb, self.ref_embs[target_label].T))
+        min_d, min_ref_indices = torch.min(d, dim=1, keepdim=True)
+        if return_ref_indices:
+            return min_d, min_ref_indices
+        else:
+            return min_d
+    
+    def __call__(self, target_tensor, target_labels, return_gated=False):
+        target_emb = self.compute_embedding(target_tensor)
+        target_labels = target_labels.to(self.nns_device)
+        
+        # TODO: maybe try multithreading this on CPU to speed up
+        nnd = torch.cat([self.compute_nnd(x.unsqueeze_(0), y) 
+                         for x, y in zip(target_emb, target_labels)], dim=0).to(self.device)
+
+        mask = nnd > self.t
+
+        if return_gated:
+            return mask, nnd
+        else:
+            return mask
+
 class MemMaskGenerator():
     def __init__(self, t, proj_model, ref_tensor, device, q=None,
                  nnd_stats_path='/home/cybai2020/BigGAN-PyTorch/cifar10_train_nnd_stats.npz'):

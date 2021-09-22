@@ -51,7 +51,7 @@ def main():
     parser.add_argument('--mrt', type=float, default=0.0, help='memorization rejection threshold')
     parser.add_argument('--mr_model', type=str, default="imagenet_inception_v3", help='memorization rejection projection model')
 
-    parser.add_argument('--mo', type=none_or_str, default=None, choices=["G", None])
+    parser.add_argument('--mo', type=none_or_str, default=None, choices=["G", "G_mean_match", None])
     parser.add_argument('--mot', type=float, default=0.0, help='memorization optimization threshold')
     parser.add_argument('--mo_weight', type=float, default=0.0, help='memorization optimization loss weight')
 
