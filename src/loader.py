@@ -24,6 +24,7 @@ from utils.biggan_utils import ema, ema_DP_SyncBN
 from sync_batchnorm.batchnorm import convert_model
 from worker import make_worker
 from models.reID import gan_proj_ft_net
+from models.ae import AE
 # from models.retinaface import RetinaFaceProject
 
 import torch
@@ -33,10 +34,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
 
-
 def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_configs, model_configs, hdf5_path_train):
     cfgs = dict2clsattr(train_configs, model_configs)
-    prev_ada_p, step, best_step, best_fid, best_fid_checkpoint_path, mu, sigma, inception_model = None, 0, 0, None, None, None, None, None
+    prev_ada_p, step, best_step = None, 0, 0
+    best_fid, best_fid_checkpoint_path = None, None
+    mu, sigma, inception_model = None, None, None
 
     if cfgs.distributed_data_parallel:
         global_rank = cfgs.nr*(gpus_per_node) + local_rank
@@ -57,8 +59,9 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
 
     ##### load dataset #####
     if local_rank == 0: logger.info('Load train datasets...')
-    train_dataset = LoadDataset(cfgs.dataset_name, cfgs.data_path, train=True, download=True, resize_size=cfgs.img_size,
-                                hdf5_path=hdf5_path_train, random_flip=cfgs.random_flip_preprocessing)
+    train_dataset = LoadDataset(cfgs.dataset_name, cfgs.data_path, train=True, download=True, 
+                                resize_size=cfgs.img_size, hdf5_path=hdf5_path_train,
+                                random_flip=cfgs.random_flip_preprocessing)
     if cfgs.reduce_train_dataset < 1.0:
         num_train = int(cfgs.reduce_train_dataset*len(train_dataset))
         train_dataset, _ = torch.utils.data.random_split(train_dataset, [num_train, len(train_dataset) - num_train])
@@ -66,8 +69,8 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
 
     if local_rank == 0: logger.info('Load {mode} datasets...'.format(mode=cfgs.eval_type))
     eval_mode = True if cfgs.eval_type == 'train' else False
-    eval_dataset = LoadDataset(cfgs.dataset_name, cfgs.data_path, train=eval_mode, download=True, resize_size=cfgs.img_size,
-                               hdf5_path=None, random_flip=False)
+    eval_dataset = LoadDataset(cfgs.dataset_name, cfgs.data_path, train=eval_mode, download=True, 
+                               resize_size=cfgs.img_size, hdf5_path=None, random_flip=False)
     if local_rank == 0: logger.info('Eval dataset size : {dataset_size}'.format(dataset_size=len(eval_dataset)))
 
     if cfgs.distributed_data_parallel:
@@ -78,7 +81,8 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
 
     train_dataloader = DataLoader(train_dataset, batch_size=cfgs.batch_size, shuffle=(train_sampler is None), pin_memory=True,
                                   num_workers=cfgs.num_workers, sampler=train_sampler, drop_last=True)
-    eval_dataloader = DataLoader(eval_dataset, batch_size=cfgs.batch_size, shuffle=False, pin_memory=True, num_workers=cfgs.num_workers, drop_last=False)
+    eval_dataloader = DataLoader(eval_dataset, batch_size=cfgs.batch_size, shuffle=False, pin_memory=True,
+                                 num_workers=cfgs.num_workers, drop_last=False)
 
     ##### prepare memorization rejection mask #####
     vanilla_train_dset = LoadDataset(cfgs.dataset_name, cfgs.data_path, train=True, download=True, 
@@ -99,12 +103,18 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
             proj_model = gan_proj_ft_net(config['nclasses'], stride=config['stride'])
             proj_model.load_state_dict(torch.load('Person_reID_baseline_pytorch/model/ft_ResNet50/net_last.pth'))
             proj_model = proj_model.eval().to(local_rank)
+        elif cfgs.train_configs['mr_model'] == 'celeba128_ae':
+            proj_model = AE(in_channels=3, latent_dim=128, hidden_dims=None, img_size=128, scale=True)
+            proj_model.load_state_dict({'.'.join(k.split('.')[1:]): v 
+                            for k, v in torch.load('./proj_model_ckpts/celeba128_ae.pth')['state_dict'].items()})
+            proj_model = proj_model.eval().to(local_rank)
         else:
             raise NotImplementedError
 
         with torch.no_grad():
-            mmg = prepare_default_mmg(proj_model, mrt=cfgs.train_configs['mrt'] if cfgs.train_configs['mr'] is not None else cfgs.train_configs['mot'],
-                                      mrq=None, device=local_rank, vanilla_train_dset=vanilla_train_dset)
+            t = cfgs.train_configs['mrt'] if cfgs.train_configs['mr'] is not None else cfgs.train_configs['mot']
+            mmg = prepare_default_mmg(proj_model, mrt=t, mrq=None, device=local_rank, 
+                                      vanilla_train_dset=vanilla_train_dset)
     else:
         mmg = None
 
@@ -112,19 +122,22 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
     if local_rank == 0: logger.info('Build model...')
     module = __import__('models.{architecture}'.format(architecture=cfgs.architecture), fromlist=['something'])
     if local_rank == 0: logger.info('Modules are located on models.{architecture}.'.format(architecture=cfgs.architecture))
-    Gen = module.Generator(cfgs.z_dim, cfgs.shared_dim, cfgs.img_size, cfgs.g_conv_dim, cfgs.g_spectral_norm, cfgs.attention,
-                           cfgs.attention_after_nth_gen_block, cfgs.activation_fn, cfgs.conditional_strategy, cfgs.num_classes,
-                           cfgs.g_init, cfgs.G_depth, cfgs.mixed_precision).to(local_rank)
+    Gen = module.Generator(cfgs.z_dim, cfgs.shared_dim, cfgs.img_size, cfgs.g_conv_dim, cfgs.g_spectral_norm, 
+                           cfgs.attention, cfgs.attention_after_nth_gen_block, cfgs.activation_fn, 
+                           cfgs.conditional_strategy, cfgs.num_classes, cfgs.g_init, cfgs.G_depth,
+                           cfgs.mixed_precision).to(local_rank)
 
-    Dis = module.Discriminator(cfgs.img_size, cfgs.d_conv_dim, cfgs.d_spectral_norm, cfgs.attention, cfgs.attention_after_nth_dis_block,
-                               cfgs.activation_fn, cfgs.conditional_strategy, cfgs.hypersphere_dim, cfgs.num_classes, cfgs.nonlinear_embed,
-                               cfgs.normalize_embed, cfgs.d_init, cfgs.D_depth, cfgs.mixed_precision).to(local_rank)
+    Dis = module.Discriminator(cfgs.img_size, cfgs.d_conv_dim, cfgs.d_spectral_norm, cfgs.attention, 
+                               cfgs.attention_after_nth_dis_block, cfgs.activation_fn, cfgs.conditional_strategy, 
+                               cfgs.hypersphere_dim, cfgs.num_classes, cfgs.nonlinear_embed, cfgs.normalize_embed, 
+                               cfgs.d_init, cfgs.D_depth, cfgs.mixed_precision).to(local_rank)
 
     if cfgs.ema:
         if local_rank == 0: logger.info('Prepare EMA for G with decay of {}.'.format(cfgs.ema_decay))
-        Gen_copy = module.Generator(cfgs.z_dim, cfgs.shared_dim, cfgs.img_size, cfgs.g_conv_dim, cfgs.g_spectral_norm, cfgs.attention,
-                                    cfgs.attention_after_nth_gen_block, cfgs.activation_fn, cfgs.conditional_strategy, cfgs.num_classes,
-                                    initialize=False, G_depth=cfgs.G_depth, mixed_precision=cfgs.mixed_precision).to(local_rank)
+        Gen_copy = module.Generator(cfgs.z_dim, cfgs.shared_dim, cfgs.img_size, cfgs.g_conv_dim, cfgs.g_spectral_norm,
+                                    cfgs.attention, cfgs.attention_after_nth_gen_block, cfgs.activation_fn, 
+                                    cfgs.conditional_strategy, cfgs.num_classes, initialize=False, G_depth=cfgs.G_depth,
+                                    mixed_precision=cfgs.mixed_precision).to(local_rank)
         if not cfgs.distributed_data_parallel and world_size > 1 and cfgs.synchronized_bn:
             Gen_ema = ema_DP_SyncBN(Gen, Gen_copy, cfgs.ema_decay, cfgs.ema_start)
         else:
@@ -144,14 +157,20 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
     D_loss = {'vanilla': loss_dcgan_dis, 'least_square': loss_lsgan_dis, 'hinge': loss_hinge_dis, 'wasserstein': loss_wgan_dis}
 
     if cfgs.optimizer == "SGD":
-        G_optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, Gen.parameters()), cfgs.g_lr, momentum=cfgs.momentum, nesterov=cfgs.nesterov)
-        D_optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, Dis.parameters()), cfgs.d_lr, momentum=cfgs.momentum, nesterov=cfgs.nesterov)
+        G_optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, Gen.parameters()), cfgs.g_lr, 
+                                      momentum=cfgs.momentum, nesterov=cfgs.nesterov)
+        D_optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, Dis.parameters()), cfgs.d_lr, 
+                                      momentum=cfgs.momentum, nesterov=cfgs.nesterov)
     elif cfgs.optimizer == "RMSprop":
-        G_optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, Gen.parameters()), cfgs.g_lr, momentum=cfgs.momentum, alpha=cfgs.alpha)
-        D_optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, Dis.parameters()), cfgs.d_lr, momentum=cfgs.momentum, alpha=cfgs.alpha)
+        G_optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, Gen.parameters()), cfgs.g_lr, 
+                                          momentum=cfgs.momentum, alpha=cfgs.alpha)
+        D_optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, Dis.parameters()), cfgs.d_lr, 
+                                          momentum=cfgs.momentum, alpha=cfgs.alpha)
     elif cfgs.optimizer == "Adam":
-        G_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, Gen.parameters()), cfgs.g_lr, [cfgs.beta1, cfgs.beta2], eps=1e-6)
-        D_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, Dis.parameters()), cfgs.d_lr, [cfgs.beta1, cfgs.beta2], eps=1e-6)
+        G_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, Gen.parameters()), 
+                                       cfgs.g_lr, [cfgs.beta1, cfgs.beta2], eps=1e-6)
+        D_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, Dis.parameters()), 
+                                       cfgs.d_lr, [cfgs.beta1, cfgs.beta2], eps=1e-6)
     else:
         raise NotImplementedError
 
@@ -219,7 +238,8 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
         inception_model = InceptionV3().to(local_rank)
         if world_size > 1 and cfgs.distributed_data_parallel:
             toggle_grad(inception_model, on=True)
-            inception_model = DDP(inception_model, device_ids=[local_rank], broadcast_buffers=False, find_unused_parameters=True)
+            inception_model = DDP(inception_model, device_ids=[local_rank], 
+                                  broadcast_buffers=False, find_unused_parameters=True)
         elif world_size > 1 and cfgs.distributed_data_parallel is False:
             inception_model = DataParallel(inception_model, output_device=local_rank)
         else:
@@ -270,28 +290,40 @@ def prepare_train_eval(local_rank, gpus_per_node, world_size, run_name, train_co
         step = worker.train(current_step=step, total_step=cfgs.total_step)
 
     if cfgs.eval:
-        is_save = worker.evaluation(step=step, standing_statistics=cfgs.standing_statistics, standing_step=cfgs.standing_step)
+        is_save = worker.evaluation(step=step, 
+                                    standing_statistics=cfgs.standing_statistics, 
+                                    standing_step=cfgs.standing_step)
 
     if cfgs.save_images:
-        worker.save_images(is_generate=True, png=True, npz=True, standing_statistics=cfgs.standing_statistics, standing_step=cfgs.standing_step)
+        worker.save_images(is_generate=True, png=True, npz=True, 
+                           standing_statistics=cfgs.standing_statistics, 
+                           standing_step=cfgs.standing_step)
 
     if cfgs.image_visualization:
-        worker.run_image_visualization(nrow=cfgs.nrow, ncol=cfgs.ncol, standing_statistics=cfgs.standing_statistics, standing_step=cfgs.standing_step)
+        worker.run_image_visualization(nrow=cfgs.nrow, ncol=cfgs.ncol, 
+                                       standing_statistics=cfgs.standing_statistics, 
+                                       standing_step=cfgs.standing_step)
 
     if cfgs.k_nearest_neighbor:
-        worker.run_nearest_neighbor(nrow=cfgs.nrow, ncol=cfgs.ncol, standing_statistics=cfgs.standing_statistics, standing_step=cfgs.standing_step)
+        worker.run_nearest_neighbor(nrow=cfgs.nrow, ncol=cfgs.ncol, 
+                                    standing_statistics=cfgs.standing_statistics, 
+                                    standing_step=cfgs.standing_step)
 
     if cfgs.interpolation:
         assert cfgs.architecture in ["big_resnet", "biggan_deep"], "StudioGAN does not support interpolation analysis except for biggan and biggan_deep."
         worker.run_linear_interpolation(nrow=cfgs.nrow, ncol=cfgs.ncol, fix_z=True, fix_y=False,
-                                        standing_statistics=cfgs.standing_statistics, standing_step=cfgs.standing_step)
+                                        standing_statistics=cfgs.standing_statistics, 
+                                        standing_step=cfgs.standing_step)
         worker.run_linear_interpolation(nrow=cfgs.nrow, ncol=cfgs.ncol, fix_z=False, fix_y=True,
-                                        standing_statistics=cfgs.standing_statistics, standing_step=cfgs.standing_step)
+                                        standing_statistics=cfgs.standing_statistics, 
+                                        standing_step=cfgs.standing_step)
 
     if cfgs.frequency_analysis:
         worker.run_frequency_analysis(num_images=len(train_dataset)//cfgs.num_classes,
-                                      standing_statistics=cfgs.standing_statistics, standing_step=cfgs.standing_step)
+                                      standing_statistics=cfgs.standing_statistics, 
+                                      standing_step=cfgs.standing_step)
 
     if cfgs.tsne_analysis:
         worker.run_tsne(dataloader = eval_dataloader,
-                        standing_statistics=cfgs.standing_statistics, standing_step=cfgs.standing_step)
+                        standing_statistics=cfgs.standing_statistics, 
+                        standing_step=cfgs.standing_step)

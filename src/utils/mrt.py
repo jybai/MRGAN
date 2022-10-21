@@ -8,6 +8,7 @@ from torchvision.models.inception import inception_v3
 
 import torchvision
 import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
 
 class ConditionalMaskGenerator():
     def __init__(self, t, proj_model, ref_tensors, device, nns_device=None):
@@ -53,7 +54,7 @@ class ConditionalMaskGenerator():
             return mask
 
 class MemMaskGenerator():
-    def __init__(self, t, proj_model, ref_tensor, device, q=None,
+    def __init__(self, t, proj_model, ref_dl, device, q=None,
                  nnd_stats_path='/home/cybai2020/BigGAN-PyTorch/cifar10_train_nnd_stats.npz'):
         if q is None:
             self.t = t
@@ -70,7 +71,7 @@ class MemMaskGenerator():
         self.proj_model.eval()
         self.device = device
         
-        self.ref_emb = self.compute_embedding(ref_tensor)
+        self.ref_emb = self.compute_embedding(ref_dl, is_dataloader=True)
         
         self.accu_nnds = []
         self.accu_labels = []
@@ -98,12 +99,18 @@ class MemMaskGenerator():
         self.accu_nnds = []
         self.accu_labels = []
     
-    def compute_embedding(self, target_tensor, bsize=64):
+    def compute_embedding(self, target, bsize=64, is_dataloader=False):
         target_emb = [] 
-        for index in range(0, target_tensor.shape[0], bsize):
-            target_batch = target_tensor[index:index + bsize].to(self.device)
-            target_emb_ = self.proj_model(target_batch)
-            target_emb.append(target_emb_)
+        if is_dataloader:
+            for xs, ys in target:
+                xs = xs.to(self.device)
+                target_emb_ = self.proj_model(xs)
+                target_emb.append(target_emb_)
+        else:
+            for index in range(0, target.shape[0], bsize):
+                target_batch = target[index:index + bsize].to(self.device)
+                target_emb_ = self.proj_model(target_batch)
+                target_emb.append(target_emb_)
         target_emb = torch.cat(target_emb, dim=0)
         target_emb = torch.div(target_emb,
                                torch.norm(target_emb, dim=1, keepdim=True))
@@ -183,8 +190,10 @@ class SplitInceptionv3(torch.nn.Module):
 def prepare_default_mmg(proj_model, mrt, mrq, device, vanilla_train_dset):
     # cifar10_train = torchvision.datasets.CIFAR10(root='./data/cifar', train=True,
     #                                              download=True, transform=transforms.ToTensor())
-    train_feats = torch.stack([x for x, _ in vanilla_train_dset], dim=0)
-    mmg = MemMaskGenerator(mrt, proj_model, train_feats, device, q=mrq)
+    # train_feats = torch.stack([x for x, _ in vanilla_train_dset], dim=0)
+    dl = DataLoader(vanilla_train_dset, batch_size=64, shuffle=False,
+                    drop_last=False, num_workers=64)
+    mmg = MemMaskGenerator(mrt, proj_model, dl, device, q=mrq)
     return mmg
 
 def main():

@@ -18,7 +18,7 @@ from torch.utils.data import Dataset
 from torchvision.datasets import CIFAR10, STL10
 from torchvision.datasets import ImageFolder
 
-
+from data_utils.custom_dataset import ImageNetAnimal50, PatchedCelebA
 
 class RandomCropLongEdge(object):
     """
@@ -53,7 +53,7 @@ class CenterCropLongEdge(object):
 
 
 class LoadDataset(Dataset):
-    def __init__(self, dataset_name, data_path, train, download, resize_size, hdf5_path=None, random_flip=False, normalize=True):
+    def __init__(self, dataset_name, data_path, train, download, resize_size, hdf5_path=None, random_flip=False, normalize=True, force_eval_mode=False):
         super(LoadDataset, self).__init__()
         self.dataset_name = dataset_name
         self.data_path = data_path
@@ -68,15 +68,19 @@ class LoadDataset(Dataset):
         if self.hdf5_path is None:
             if self.dataset_name in ['cifar10', 'tiny_imagenet', 'celeba-hq_64', 'celeba-hq_128']:
                 self.transforms = []
-            elif self.dataset_name in ['imagenet', 'custom']:
-                if train:
+            elif self.dataset_name in ['imagenet', 'imagenet_animal50', 'custom']:
+                if train and not force_eval_mode:
                     self.transforms = [RandomCropLongEdge(), transforms.Resize(self.resize_size)]
                 else:
                     self.transforms = [CenterCropLongEdge(), transforms.Resize(self.resize_size)]
+            elif self.dataset_name in ['celeba_64', 'celeba_128']:
+                self.transforms = [transforms.CenterCrop(148), transforms.Resize(self.resize_size)]
+            else:
+                raise NotImplementedError
         else:
             self.transforms = [transforms.ToPILImage()]
 
-        if random_flip:
+        if random_flip and not force_eval_mode:
             self.transforms += [transforms.RandomHorizontalFlip()]
 
         self.transforms += [transforms.ToTensor()]
@@ -95,7 +99,7 @@ class LoadDataset(Dataset):
                     self.data = f['imgs'][:]
                     self.labels = f['labels'][:]
             else:
-                self.data = CIFAR10(root=os.path.join('data', self.dataset_name),
+                self.data = CIFAR10(root=os.path.join(self.data_path, self.dataset_name),
                                     train=self.train,
                                     download=self.download)
 
@@ -107,7 +111,7 @@ class LoadDataset(Dataset):
                     self.labels = f['labels'][:]
             else:
                 mode = 'train' if self.train == True else 'valid'
-                root = os.path.join('data','ILSVRC2012', mode)
+                root = os.path.join(self.data_path,'ILSVRC2012', mode)
                 self.data = ImageFolder(root=root)
 
         elif self.dataset_name == "tiny_imagenet":
@@ -118,8 +122,18 @@ class LoadDataset(Dataset):
                     self.labels = f['labels'][:]
             else:
                 mode = 'train' if self.train == True else 'valid'
-                root = os.path.join('data','TINY_ILSVRC2012', mode)
+                root = os.path.join(self.data_path,'TINY_ILSVRC2012', mode)
                 self.data = ImageFolder(root=root)
+        
+        elif self.dataset_name == 'imagenet_animal50':
+            if self.hdf5_path is not None:
+                print('Loading %s into memory...' % self.hdf5_path)
+                with h5.File(self.hdf5_path, 'r') as f:
+                    self.data = f['imgs'][:]
+                    self.labels = f['labels'][:]
+            else:
+                mode = 'train' if self.train == True else 'valid'
+                self.data = ImageNetAnimal50(self.data_path, mode)
 
         elif self.dataset_name == "celeba-hq_128":
             if self.hdf5_path is not None:
@@ -129,7 +143,7 @@ class LoadDataset(Dataset):
                     self.labels = f['labels'][:]
             else:
                 mode = 'train' if self.train == True else 'valid'
-                root = os.path.join('data','CELEBA-HQ_128', mode)
+                root = os.path.join(self.data_path,'CELEBA-HQ_128', mode)
                 self.data = ImageFolder(root=root)
 
         elif self.dataset_name == "celeba-hq_64":
@@ -140,8 +154,18 @@ class LoadDataset(Dataset):
                     self.labels = f['labels'][:]
             else:
                 mode = 'train' if self.train == True else 'valid'
-                root = os.path.join('data','CELEBA-HQ_64', mode)
+                root = os.path.join(self.data_path,'CELEBA-HQ_64', mode)
                 self.data = ImageFolder(root=root)
+        
+        elif self.dataset_name in ["celeba_64", "celeba_128"]:
+            if self.hdf5_path is not None:
+                print('Loading %s into memory...' % self.hdf5_path)
+                with h5.File(self.hdf5_path, 'r') as f:
+                    self.data = f['imgs'][:]
+                    self.labels = f['labels'][:]
+            else:
+                mode = 'train' if self.train == True else 'valid'
+                self.data = PatchedCelebA(root=self.data_path, split=mode, download=False, target_type='identity')
 
         elif self.dataset_name == "custom":
             if self.hdf5_path is not None:
@@ -151,7 +175,7 @@ class LoadDataset(Dataset):
                     self.labels = f['labels'][:]
             else:
                 mode = 'train' if self.train == True else 'valid'
-                root = os.path.join('data','CUSTOM', mode)
+                root = os.path.join(self.data_path,'CUSTOM', mode)
                 self.data = ImageFolder(root=root)
         else:
             raise NotImplementedError

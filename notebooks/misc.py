@@ -8,6 +8,7 @@ import numpy as np
 from argparse import ArgumentParser
 from matplotlib import pyplot as plt
 from scipy.special import softmax
+from tqdm.notebook import tqdm
 
 import torch
 from torch.nn import Parameter as P
@@ -84,6 +85,17 @@ def wrapper_best(runname, dset_name, **kwargs):
     sampler = construct_sampler(ema_g_path, config_path, **kwargs)
     return sampler
 
+def load_all_Gs(runname, dset_name, **kwargs):
+    if len(glob.glob(f'../checkpoints/{runname}/model=G_ema-weights-step=*.pth')) > 0:
+        g_paths = glob.glob(f'../checkpoints/{runname}/model=G_ema-weights-step=*.pth')
+    else:
+        g_paths = glob.glob(f'../checkpoints/{runname}/model=G-weights-step=*.pth')
+    config_path = f"../src/configs/{dset_name}/{runname.split('-')[0]}.json"
+    Gs = {int(g_path.split('/')[-1].split('=')[-1].split('.')[0]): 
+                construct_generator(config_path, ema_g_path=g_path, **kwargs) 
+                for g_path in g_paths}
+    return Gs
+
 def visualize_samples(sampler):
     with torch.no_grad():
         x, y = next(sampler)
@@ -142,7 +154,7 @@ def project(generator, model, n_samples, to_numpy=True, return_logits=True):
     xs, ys, embs, logits = [], [], [], []
     n_samples_now = 0
     with torch.no_grad():
-        for x, y in generator:
+        for x, y in tqdm(generator, leave=False):
             x = x.to(device) # expect value range = [-1, 1]
             if return_logits is None:
                 _embs = model(x).detach()
@@ -219,6 +231,23 @@ def calculate_knnd_torch(target_feats, ref_feats, k=1, return_indices=True):
         return val[:, -1], idx[:, -1]
     else:
         return val[:, -1]
+    
+def construct_latent_sampler(config_path, device, bsize=50, sample_mode="default"):
+    def _sampler():
+        train_configs = _load_default_train_args()
+        with open(config_path) as f:
+            model_configs = json.load(f)
+        cfgs = dict2clsattr(train_configs, model_configs)
+    
+        while True:
+            with torch.no_grad():
+                zs, fake_labels = sample_latents(dist=cfgs.prior, batch_size=bsize, dim=cfgs.z_dim, 
+                                                 truncated_factor=cfgs.truncated_factor, 
+                                                 num_classes=cfgs.num_classes, perturb=None, 
+                                                 device=device, sampler=sample_mode)
+                yield zs, fake_labels
+                
+    return _sampler()
 
 def construct_sampler(ema_g_path, config_path, device, bsize=50, sample_mode="default"):
     def _sampler():

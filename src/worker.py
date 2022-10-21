@@ -56,10 +56,10 @@ LOG_FORMAT = (
 
 
 class make_worker(object):
-    def __init__(self, cfgs, run_name, best_step, logger, writer, n_gpus, gen_model, dis_model, inception_model, Gen_copy,
-                 Gen_ema, train_dataset, eval_dataset, mmg, train_dataloader, eval_dataloader, G_optimizer, D_optimizer, G_loss,
-                 D_loss, prev_ada_p, global_rank, local_rank, bn_stat_OnTheFly, checkpoint_dir, mu, sigma, best_fid,
-                 best_fid_checkpoint_path):
+    def __init__(self, cfgs, run_name, best_step, logger, writer, n_gpus, gen_model, dis_model, inception_model, 
+                 Gen_copy, Gen_ema, train_dataset, eval_dataset, mmg, train_dataloader, eval_dataloader, 
+                 G_optimizer, D_optimizer, G_loss, D_loss, prev_ada_p, global_rank, local_rank, 
+                 bn_stat_OnTheFly, checkpoint_dir, mu, sigma, best_fid, best_fid_checkpoint_path):
 
         self.cfgs = cfgs
         self.run_name = run_name
@@ -170,7 +170,9 @@ class make_worker(object):
 
         if self.distributed_data_parallel: self.group = dist.new_group([n for n in range(self.n_gpus)])
         if self.mixed_precision: self.scaler = torch.cuda.amp.GradScaler()
-        if self.ada: self.adtv_aug = Adaptive_Augment(self.prev_ada_p, self.ada_target, self.ada_length, self.batch_size, self.local_rank)
+        if self.ada: 
+            self.adtv_aug = Adaptive_Augment(self.prev_ada_p, self.ada_target, self.ada_length, 
+                                             self.batch_size, self.local_rank)
 
         if self.conditional_strategy in ['ProjGAN', 'ContraGAN', 'Proxy_NCA_GAN']:
             if isinstance(self.dis_model, DataParallel) or isinstance(self.dis_model, DistributedDataParallel):
@@ -179,9 +181,11 @@ class make_worker(object):
                 self.embedding_layer = self.dis_model.embedding
 
         if self.conditional_strategy == 'ContraGAN':
-            self.contrastive_criterion = Conditional_Contrastive_loss(self.local_rank, self.batch_size, self.pos_collected_numerator)
+            self.contrastive_criterion = Conditional_Contrastive_loss(self.local_rank, self.batch_size, 
+                                                                      self.pos_collected_numerator)
         elif self.conditional_strategy == 'Proxy_NCA_GAN':
-            self.NCA_criterion = Proxy_NCA_loss(self.local_rank, self.embedding_layer, self.num_classes, self.batch_size)
+            self.NCA_criterion = Proxy_NCA_loss(self.local_rank, self.embedding_layer, 
+                                                self.num_classes, self.batch_size)
         elif self.conditional_strategy == 'NT_Xent_GAN':
             self.NT_Xent_criterion = NT_Xent_loss(self.local_rank, self.batch_size)
         else:
@@ -191,10 +195,14 @@ class make_worker(object):
             self.num_eval = {'train':50000, 'valid':50000}
         elif self.dataset_name == "tiny_imagenet":
             self.num_eval = {'train':50000, 'valid':10000}
+        elif self.dataset_name == "imagenet_animal50":
+            self.num_eval = {'train':50000, 'valid':2500}
         elif self.dataset_name == "cifar10":
             self.num_eval = {'train':50000, 'test':10000}
-        elif 'celeba-hq' in self.dataset_name:
+        elif self.dataset_name in ['celeba-hq_64', 'celeba-hq_128']:
             self.num_eval = {'train':24183, 'test':5817}
+        elif self.dataset_name in ['celeba_64', 'celeba_128']:
+            self.num_eval = {'train':50000, 'valid':19867}
         elif self.dataset_name == "custom":
             num_train_images, num_eval_images = len(self.train_dataset.data), len(self.eval_dataset.data)
             self.num_eval = {'train':num_train_images, 'valid':num_eval_images}
@@ -220,7 +228,8 @@ class make_worker(object):
             # ================== TRAIN D ================== #
             toggle_grad(self.dis_model, on=True, freeze_layers=self.freeze_layers)
             toggle_grad(self.gen_model, on=False, freeze_layers=-1)
-            t = set_temperature(self.conditional_strategy, self.tempering_type, self.start_temperature, self.end_temperature, step_count, self.tempering_step, total_step)
+            t = set_temperature(self.conditional_strategy, self.tempering_type, self.start_temperature, 
+                                self.end_temperature, step_count, self.tempering_step, total_step)
             for step_index in range(self.d_steps_per_iter):
                 self.D_optimizer.zero_grad()
                 for acml_index in range(self.accumulation_steps):
@@ -239,27 +248,32 @@ class make_worker(object):
 
                         while True:
                             if self.zcr:
-                                zs, fake_labels, zs_t = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
+                                zs, fake_labels, zs_t = sample_latents(self.prior, self.batch_size, 
+                                                                       self.z_dim, 1, self.num_classes,
                                                                        self.sigma_noise, self.local_rank)
                             else:
-                                zs, fake_labels = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
+                                zs, fake_labels = sample_latents(self.prior, self.batch_size, 
+                                                                 self.z_dim, 1, self.num_classes,
                                                                  None, self.local_rank)
                             if self.latent_op:
-                                zs, transport_cost = latent_optimise(zs, fake_labels, self.gen_model, self.dis_model, self.conditional_strategy,
-                                                                     self.latent_op_step, self.latent_op_rate, self.latent_op_alpha,
+                                zs, transport_cost = latent_optimise(zs, fake_labels, self.gen_model, self.dis_model, 
+                                                                     self.conditional_strategy, self.latent_op_step,
+                                                                     self.latent_op_rate, self.latent_op_alpha,
                                                                      self.latent_op_beta, False, self.local_rank)
 
                             fake_images = self.gen_model(zs, fake_labels)
 
                             if self.cfgs.train_configs['mr'] == "GD":
                                 with torch.no_grad():
-                                    mask, nnd = self.mmg((fake_images.detach() + 1.) / 2., fake_labels, return_gated=True)
+                                    mask, nnd = self.mmg((fake_images.detach() + 1.) / 2., 
+                                                         fake_labels, return_gated=True)
                                 mask = mask.view(-1)
                                 nnd = nnd.view(-1)
 
                                 if torch.sum(mask.float()).item() > 0:
+                                    # apply same mask to maintain real/fake balance
                                     fake_images, fake_labels = fake_images[mask], fake_labels[mask]
-                                    real_images, real_labels = real_images[mask], real_labels[mask] # apply same mask to maintain real/fake balance
+                                    real_images, real_labels = real_images[mask], real_labels[mask] 
                                     break
                             else:
                                 break
@@ -283,17 +297,21 @@ class make_worker(object):
 
                         dis_acml_loss = self.D_loss(dis_out_real, dis_out_fake)
                         if self.conditional_strategy == "ACGAN":
-                            dis_acml_loss += (self.ce_loss(cls_out_real, real_labels) + self.ce_loss(cls_out_fake, fake_labels))
+                            dis_acml_loss += (self.ce_loss(cls_out_real, real_labels) + \
+                                              self.ce_loss(cls_out_fake, fake_labels))
                         elif self.conditional_strategy == "NT_Xent_GAN":
                             real_images_aug = CR_DiffAug(real_images)
                             _, cls_embed_real_aug, dis_out_real_aug = self.dis_model(real_images_aug, real_labels)
-                            dis_acml_loss += self.contrastive_lambda*self.NT_Xent_criterion(cls_embed_real, cls_embed_real_aug, t)
+                            nt_xent_loss = self.NT_Xent_criterion(cls_embed_real, cls_embed_real_aug, t)
+                            dis_acml_loss += self.contrastive_lambda * nt_xent_loss
                         elif self.conditional_strategy == "Proxy_NCA_GAN":
-                            dis_acml_loss += self.contrastive_lambda*self.NCA_criterion(cls_embed_real, cls_proxies_real, real_labels)
+                            nca_loss = self.NCA_criterion(cls_embed_real, cls_proxies_real, real_labels)
+                            dis_acml_loss += self.contrastive_lambda * nca_loss
                         elif self.conditional_strategy == "ContraGAN":
                             real_cls_mask = make_mask(real_labels, self.num_classes, self.local_rank)
-                            dis_acml_loss += self.contrastive_lambda*self.contrastive_criterion(cls_embed_real, cls_proxies_real,
-                                                                                                real_cls_mask, real_labels, t, self.margin)
+                            contra_loss = self.contrastive_criterion(cls_embed_real, cls_proxies_real, real_cls_mask,
+                                                                     real_labels, t, self.margin)
+                            dis_acml_loss += self.contrastive_lambda * contra_loss
                         else:
                             pass
 
@@ -327,8 +345,10 @@ class make_worker(object):
                                 dis_out_real_aug = self.dis_model(real_images_aug, real_labels)
                                 dis_out_fake_aug = self.dis_model(fake_images_aug, fake_labels)
                             elif self.conditional_strategy in ["ContraGAN", "Proxy_NCA_GAN", "NT_Xent_GAN"]:
-                                cls_proxies_real_aug, cls_embed_real_aug, dis_out_real_aug = self.dis_model(real_images_aug, real_labels)
-                                cls_proxies_fake_aug, cls_embed_fake_aug, dis_out_fake_aug = self.dis_model(fake_images_aug, fake_labels)
+                                cls_proxies_real_aug, cls_embed_real_aug, dis_out_real_aug = self.dis_model(real_images_aug,
+                                                                                                            real_labels)
+                                cls_proxies_fake_aug, cls_embed_fake_aug, dis_out_fake_aug = self.dis_model(fake_images_aug,
+                                                                                                            fake_labels)
                                 cls_bcr_real_loss = self.l2_loss(cls_embed_real, cls_embed_real_aug)
                                 cls_bcr_fake_loss = self.l2_loss(cls_embed_fake, cls_embed_fake_aug)
                             else:
@@ -339,7 +359,7 @@ class make_worker(object):
                             if self.conditional_strategy in ["ACGAN", "NT_Xent_GAN", "Proxy_NCA_GAN", "ContraGAN"]:
                                 bcr_real_loss += cls_bcr_real_loss
                                 bcr_fake_loss += cls_bcr_fake_loss
-                            dis_acml_loss += self.real_lambda*bcr_real_loss + self.fake_lambda*bcr_fake_loss
+                            dis_acml_loss += self.real_lambda * bcr_real_loss + self.fake_lambda * bcr_fake_loss
 
                         if self.zcr:
                             fake_images_zaug = self.gen_model(zs_t, fake_labels)
@@ -360,11 +380,13 @@ class make_worker(object):
                             dis_acml_loss += self.dis_lambda*zcr_dis_loss
 
                         if self.gradient_penalty_for_dis:
-                            dis_acml_loss += self.gradient_penalty_lambda*calc_derv4gp(self.dis_model, self.conditional_strategy, real_images,
-                                                                                       fake_images, real_labels, self.local_rank)
+                            gp_loss = calc_derv4gp(self.dis_model, self.conditional_strategy, 
+                                                   real_images, fake_images, real_labels, self.local_rank)
+                            dis_acml_loss += self.gradient_penalty_lambda * gp_loss
                         if self.deep_regret_analysis_for_dis:
-                            dis_acml_loss += self.regret_penalty_lambda*calc_derv4dra(self.dis_model, self.conditional_strategy, real_images,
-                                                                                      real_labels, self.local_rank)
+                            dra_loss = calc_derv4dra(self.dis_model, self.conditional_strategy, 
+                                                     real_images, real_labels, self.local_rank)
+                            dis_acml_loss += self.regret_penalty_lambda * dra_loss
                         if self.ada:
                             self.ada_aug_p = self.adtv_aug.update(dis_out_real)
 
@@ -400,21 +422,25 @@ class make_worker(object):
 
                         while True:
                             if self.zcr:
-                                zs, fake_labels, zs_t = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
+                                zs, fake_labels, zs_t = sample_latents(self.prior, self.batch_size, 
+                                                                       self.z_dim, 1, self.num_classes,
                                                                        self.sigma_noise, self.local_rank)
                             else:
-                                zs, fake_labels = sample_latents(self.prior, self.batch_size, self.z_dim, 1, self.num_classes,
+                                zs, fake_labels = sample_latents(self.prior, self.batch_size, 
+                                                                 self.z_dim, 1, self.num_classes,
                                                                  None, self.local_rank)
                             if self.latent_op:
-                                zs, transport_cost = latent_optimise(zs, fake_labels, self.gen_model, self.dis_model, self.conditional_strategy,
-                                                                     self.latent_op_step, self.latent_op_rate, self.latent_op_alpha,
+                                zs, transport_cost = latent_optimise(zs, fake_labels, self.gen_model, self.dis_model, 
+                                                                     self.conditional_strategy, self.latent_op_step,
+                                                                     self.latent_op_rate, self.latent_op_alpha,
                                                                      self.latent_op_beta, True, self.local_rank)
 
                             fake_images = self.gen_model(zs, fake_labels)
 
-                            if self.cfgs.train_configs['mr'] == "G" or self.cfgs.train_configs['mr'] == "GD":
+                            if self.cfgs.train_configs['mr'] in ["G", "GD"]:
                                 with torch.no_grad():
-                                    mask, nnd = self.mmg((fake_images.detach() + 1.) / 2., fake_labels, return_gated=True)
+                                    mask, nnd = self.mmg((fake_images.detach() + 1.) / 2., 
+                                                         fake_labels, return_gated=True)
                                 mask = mask.view(-1)
                                 nnd = nnd.view(-1)
 
@@ -463,10 +489,10 @@ class make_worker(object):
                             avg_nnds.append(torch.mean(nnd).item())
 
                             mem_dist_loss = (nnd - self.cfgs.train_configs['mot'])**2 / nnd.shape[0]
-                            gen_acml_loss += mem_dist_loss*self.cfgs.train_configs['mo_weight']
+                            gen_acml_loss += mem_dist_loss * self.cfgs.train_configs['mo_weight']
 
                         if self.latent_op:
-                            gen_acml_loss += transport_cost*self.latent_norm_reg_weight
+                            gen_acml_loss += transport_cost * self.latent_norm_reg_weight
 
                         if self.zcr:
                             fake_images_zaug = self.gen_model(zs_t, fake_labels)
@@ -476,18 +502,21 @@ class make_worker(object):
                         if self.conditional_strategy == "ACGAN":
                             gen_acml_loss += self.ce_loss(cls_out_fake, fake_labels)
                         elif self.conditional_strategy == "ContraGAN":
-                            gen_acml_loss += self.contrastive_lambda*self.contrastive_criterion(cls_embed_fake, cls_proxies_fake, fake_cls_mask, 
-                                                                                                fake_labels, t, self.margin)
+                            contra_loss = self.contrastive_criterion(cls_embed_fake, cls_proxies_fake, 
+                                                                     fake_cls_mask, fake_labels, t, self.margin)
+                            gen_acml_loss += self.contrastive_lambda * contra_loss
                         elif self.conditional_strategy == "Proxy_NCA_GAN":
-                            gen_acml_loss += self.contrastive_lambda*self.NCA_criterion(cls_embed_fake, cls_proxies_fake, fake_labels)
+                            nca_loss = self.NCA_criterion(cls_embed_fake, cls_proxies_fake, fake_labels)
+                            gen_acml_loss += self.contrastive_lambda * nca_loss
                         elif self.conditional_strategy == "NT_Xent_GAN":
                             fake_images_aug = CR_DiffAug(fake_images)
                             _, cls_embed_fake_aug, dis_out_fake_aug = self.dis_model(fake_images_aug, fake_labels)
-                            gen_acml_loss += self.contrastive_lambda*self.NT_Xent_criterion(cls_embed_fake, cls_embed_fake_aug, t)
+                            nt_xent_loss = self.NT_Xent_criterion(cls_embed_fake, cls_embed_fake_aug, t)
+                            gen_acml_loss += self.contrastive_lambda * nt_xent_loss
                         else:
                             pass
 
-                        gen_acml_loss = gen_acml_loss/self.accumulation_steps
+                        gen_acml_loss = gen_acml_loss / self.accumulation_steps
 
                     if self.mixed_precision:
                         self.scaler.scale(gen_acml_loss).backward()
@@ -526,8 +555,10 @@ class make_worker(object):
                     gen_sigmas = calculate_all_sn(self.gen_model)
                     self.writer.add_scalars('SN_of_gen', gen_sigmas, step_count)
 
-                self.writer.add_scalars('Losses', {'discriminator': dis_acml_loss.item(),
-                                                   'generator': gen_acml_loss.item()}, step_count)
+                self.writer.add_scalars('Losses', 
+                                        {'discriminator': dis_acml_loss.item(),
+                                         'generator': gen_acml_loss.item()}, 
+                                        step_count)
                 if self.ada:
                     self.writer.add_scalar('ada_p', self.ada_aug_p, step_count)
                 self.writer.add_scalar('mar', np.mean(mars), step_count)
@@ -577,8 +608,10 @@ class make_worker(object):
             find_and_remove(glob.glob(join(self.checkpoint_dir,"model=G-{when}-weights-step*.pth".format(when=when)))[0])
             find_and_remove(glob.glob(join(self.checkpoint_dir,"model=D-{when}-weights-step*.pth".format(when=when)))[0])
 
-        g_checkpoint_output_path = join(self.checkpoint_dir, "model=G-{when}-weights-step={step}.pth".format(when=when, step=str(step)))
-        d_checkpoint_output_path = join(self.checkpoint_dir, "model=D-{when}-weights-step={step}.pth".format(when=when, step=str(step)))
+        g_checkpoint_output_path = join(self.checkpoint_dir, 
+                                        "model=G-{when}-weights-step={step}.pth".format(when=when, step=str(step)))
+        d_checkpoint_output_path = join(self.checkpoint_dir, 
+                                        "model=D-{when}-weights-step={step}.pth".format(when=when, step=str(step)))
 
         torch.save(g_states, g_checkpoint_output_path)
         torch.save(d_states, d_checkpoint_output_path)
@@ -594,8 +627,10 @@ class make_worker(object):
                 find_and_remove(glob.glob(join(self.checkpoint_dir,"model=G-current-weights-step*.pth"))[0])
                 find_and_remove(glob.glob(join(self.checkpoint_dir,"model=D-current-weights-step*.pth"))[0])
 
-            g_checkpoint_output_path_ = join(self.checkpoint_dir, "model=G-current-weights-step={step}.pth".format(step=str(step)))
-            d_checkpoint_output_path_ = join(self.checkpoint_dir, "model=D-current-weights-step={step}.pth".format(step=str(step)))
+            g_checkpoint_output_path_ = join(self.checkpoint_dir, 
+                                             "model=G-current-weights-step={step}.pth".format(step=str(step)))
+            d_checkpoint_output_path_ = join(self.checkpoint_dir, 
+                                             "model=D-current-weights-step={step}.pth".format(step=str(step)))
 
             torch.save(g_states, g_checkpoint_output_path_)
             torch.save(d_states, d_checkpoint_output_path_)
@@ -603,9 +638,12 @@ class make_worker(object):
         if self.Gen_copy is not None:
             g_ema_states = {'state_dict': gen_copy.state_dict()}
             if len(glob.glob(join(self.checkpoint_dir, "model=G_ema-{when}-weights-step*.pth".format(when=when)))) >= 1:
-                find_and_remove(glob.glob(join(self.checkpoint_dir, "model=G_ema-{when}-weights-step*.pth".format(when=when)))[0])
+                find_and_remove(glob.glob(join(self.checkpoint_dir, 
+                                               "model=G_ema-{when}-weights-step*.pth".format(when=when)))[0])
 
-            g_ema_checkpoint_output_path = join(self.checkpoint_dir, "model=G_ema-{when}-weights-step={step}.pth".format(when=when, step=str(step)))
+            g_ema_checkpoint_output_path = join(self.checkpoint_dir, 
+                                                "model=G_ema-{when}-weights-step={step}.pth".format(when=when, 
+                                                                                                    step=str(step)))
 
             torch.save(g_ema_states, g_ema_checkpoint_output_path)
 
@@ -615,9 +653,12 @@ class make_worker(object):
 
             if when == "best":
                 if len(glob.glob(join(self.checkpoint_dir,"model=G_ema-current-weights-step*.pth".format(when=when)))) >= 1:
-                    find_and_remove(glob.glob(join(self.checkpoint_dir,"model=G_ema-current-weights-step*.pth".format(when=when)))[0])
+                    find_and_remove(glob.glob(join(self.checkpoint_dir,
+                                                   "model=G_ema-current-weights-step*.pth".format(when=when)))[0])
 
-                g_ema_checkpoint_output_path_ = join(self.checkpoint_dir, "model=G_ema-current-weights-step={step}.pth".format(when=when, step=str(step)))
+                g_ema_checkpoint_output_path_ = join(self.checkpoint_dir, 
+                                                     "model=G_ema-current-weights-step={step}.pth".format(when=when, 
+                                                                                                          step=str(step)))
 
                 torch.save(g_ema_states, g_ema_checkpoint_output_path_)
 
@@ -640,20 +681,28 @@ class make_worker(object):
             num_split, num_run4PR, num_cluster4PR, beta4PR = 1, 10, 20, 8
 
             self.dis_model.eval()
-            generator = change_generator_mode(self.gen_model, self.Gen_copy, self.bn_stat_OnTheFly, standing_statistics, standing_step,
-                                              self.prior, self.batch_size, self.z_dim, self.num_classes, self.local_rank, training=False, counter=self.counter)
+            generator = change_generator_mode(self.gen_model, self.Gen_copy, self.bn_stat_OnTheFly, 
+                                              standing_statistics, standing_step, self.prior, 
+                                              self.batch_size, self.z_dim, self.num_classes, 
+                                              self.local_rank, training=False, counter=self.counter)
 
-            fid_score, self.m1, self.s1 = calculate_fid_score(self.eval_dataloader, generator, self.dis_model, self.inception_model, self.num_eval[self.eval_type],
-                                                              self.truncated_factor, self.prior, self.latent_op, self.latent_op_step4eval, self.latent_op_alpha,
-                                                              self.latent_op_beta, self.local_rank, self.logger, self.mu, self.sigma, self.run_name)
+            fid_score, self.m1, self.s1 = calculate_fid_score(self.eval_dataloader, generator, self.dis_model, 
+                                                              self.inception_model, self.num_eval[self.eval_type],
+                                                              self.truncated_factor, self.prior, self.latent_op,
+                                                              self.latent_op_step4eval, self.latent_op_alpha,
+                                                              self.latent_op_beta, self.local_rank, self.logger, 
+                                                              self.mu, self.sigma, self.run_name)
 
-            kl_score, kl_std = calculate_incep_score(self.eval_dataloader, generator, self.dis_model, self.inception_model, self.num_eval[self.eval_type],
-                                                     self.truncated_factor, self.prior, self.latent_op, self.latent_op_step4eval, self.latent_op_alpha,
+            kl_score, kl_std = calculate_incep_score(self.eval_dataloader, generator, self.dis_model, self.inception_model, 
+                                                     self.num_eval[self.eval_type], self.truncated_factor, self.prior,
+                                                     self.latent_op, self.latent_op_step4eval, self.latent_op_alpha,
                                                      self.latent_op_beta, num_split, self.local_rank, self.logger)
 
-            precision, recall, f_beta, f_beta_inv = calculate_f_beta_score(self.eval_dataloader, generator, self.dis_model, self.inception_model, self.num_eval[self.eval_type],
-                                                                           num_run4PR, num_cluster4PR, beta4PR, self.truncated_factor, self.prior, self.latent_op,
-                                                                           self.latent_op_step4eval, self.latent_op_alpha, self.latent_op_beta, self.local_rank, self.logger)
+            precision, recall, f_beta, f_beta_inv = calculate_f_beta_score(
+                self.eval_dataloader, generator, self.dis_model, self.inception_model, 
+                self.num_eval[self.eval_type], num_run4PR, num_cluster4PR, beta4PR, 
+                self.truncated_factor, self.prior, self.latent_op, self.latent_op_step4eval, 
+                self.latent_op_alpha, self.latent_op_beta, self.local_rank, self.logger)
             PR_Curve = plot_pr_curve(precision, recall, self.run_name, self.logger)
 
             if self.conditional_strategy in ['ProjGAN', 'ContraGAN', 'Proxy_NCA_GAN']:
@@ -662,53 +711,72 @@ class make_worker(object):
                     labels = ["airplane", "automobile", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
                 else:
                     if self.num_classes > 10:
-                        classes = torch.tensor(random.sample(range(0, self.num_classes), 10), dtype=torch.long).to(self.local_rank)
+                        classes = torch.tensor(random.sample(range(0, self.num_classes), 10), 
+                                               dtype=torch.long).to(self.local_rank)
                     else:
-                        classes = torch.tensor([c for c in range(self.num_classes)], dtype=torch.long).to(self.local_rank)
+                        classes = torch.tensor([c for c in range(self.num_classes)], 
+                                               dtype=torch.long).to(self.local_rank)
                     labels = classes.detach().cpu().numpy()
                 proxies = self.embedding_layer(classes)
                 sim_p = self.cosine_similarity(proxies.unsqueeze(1), proxies.unsqueeze(0))
-                sim_heatmap = plot_sim_heatmap(sim_p.detach().cpu().numpy(), labels, labels, self.run_name, self.logger)
+                sim_heatmap = plot_sim_heatmap(sim_p.detach().cpu().numpy(), labels, 
+                                               labels, self.run_name, self.logger)
 
             if self.D_loss.__name__ != "loss_wgan_dis":
-                real_train_acc, fake_acc = calculate_accuracy(self.train_dataloader, generator, self.dis_model, self.D_loss, self.num_eval[self.eval_type],
-                                                              self.truncated_factor, self.prior, self.latent_op, self.latent_op_step, self.latent_op_alpha,
-                                                              self.latent_op_beta, self.local_rank, cr=self.cr, logger=self.logger, eval_generated_sample=True)
+                real_train_acc, fake_acc = calculate_accuracy(self.train_dataloader, generator, self.dis_model, 
+                                                              self.D_loss, self.num_eval[self.eval_type],
+                                                              self.truncated_factor, self.prior, self.latent_op, 
+                                                              self.latent_op_step, self.latent_op_alpha,
+                                                              self.latent_op_beta, self.local_rank, cr=self.cr, 
+                                                              logger=self.logger, eval_generated_sample=True)
 
                 if self.eval_type == 'train':
                     acc_dict = {'real_train': real_train_acc, 'fake': fake_acc}
                 else:
-                    real_eval_acc = calculate_accuracy(self.eval_dataloader, generator, self.dis_model, self.D_loss, self.num_eval[self.eval_type],
-                                                       self.truncated_factor, self.prior, self.latent_op, self.latent_op_step, self.latent_op_alpha,
-                                                       self. latent_op_beta, self.local_rank, cr=self.cr, logger=self.logger, eval_generated_sample=False)
+                    real_eval_acc = calculate_accuracy(self.eval_dataloader, generator, self.dis_model, self.D_loss, 
+                                                       self.num_eval[self.eval_type], self.truncated_factor, 
+                                                       self.prior, self.latent_op, self.latent_op_step, 
+                                                       self.latent_op_alpha, self.latent_op_beta, self.local_rank, 
+                                                       cr=self.cr, logger=self.logger, eval_generated_sample=False)
                     acc_dict = {'real_train': real_train_acc, 'real_valid': real_eval_acc, 'fake': fake_acc}
 
                 if self.global_rank == 0: self.writer.add_scalars('Accuracy', acc_dict, step)
 
-            if self.best_fid is None:
-                self.best_fid, self.best_step, is_best, f_beta_best, f_beta_inv_best = fid_score, step, True, f_beta, f_beta_inv
-            else:
-                if fid_score <= self.best_fid:
-                    self.best_fid, self.best_step, is_best, f_beta_best, f_beta_inv_best = fid_score, step, True, f_beta, f_beta_inv
+            if self.best_fid is None or fid_score <= self.best_fid:
+                self.best_fid, self.best_step, is_best = fid_score, step, True 
+                f_beta_best, f_beta_inv_best = f_beta, f_beta_inv
 
             if self.global_rank == 0:
                 self.writer.add_scalars('FID score', {'using {type} moments'.format(type=self.eval_type):fid_score}, step)
-                self.writer.add_scalars('F_beta score', {'{num} generated images'.format(num=str(self.num_eval[self.eval_type])):f_beta}, step)
-                self.writer.add_scalars('F_beta_inv score', {'{num} generated images'.format(num=str(self.num_eval[self.eval_type])):f_beta_inv}, step)
-                self.writer.add_scalars('IS score', {'{num} generated images'.format(num=str(self.num_eval[self.eval_type])):kl_score}, step)
+                self.writer.add_scalars('F_beta score', 
+                                        {'{num} generated images'.format(num=str(self.num_eval[self.eval_type])):f_beta},
+                                        step)
+                self.writer.add_scalars('F_beta_inv score', 
+                                        {'{num} generated images'.format(num=str(self.num_eval[self.eval_type])):f_beta_inv},
+                                        step)
+                self.writer.add_scalars('IS score', 
+                                        {'{num} generated images'.format(num=str(self.num_eval[self.eval_type])):kl_score}, 
+                                        step)
                 self.writer.add_figure('PR_Curve', PR_Curve, global_step=step)
                 if self.conditional_strategy in ['ProjGAN', 'ContraGAN', 'Proxy_NCA_GAN']:
                     self.writer.add_figure('Similarity_heatmap', sim_heatmap, global_step=step)
-                self.logger.info('F_{beta} score (Step: {step}, Using {type} images): {F_beta}'.format(beta=beta4PR, step=step, type=self.eval_type, F_beta=f_beta))
-                self.logger.info('F_1/{beta} score (Step: {step}, Using {type} images): {F_beta_inv}'.format(beta=beta4PR, step=step, type=self.eval_type, F_beta_inv=f_beta_inv))
-                self.logger.info('FID score (Step: {step}, Using {type} moments): {FID}'.format(step=step, type=self.eval_type, FID=fid_score))
-                self.logger.info('Inception score (Step: {step}, {num} generated images): {IS}'.format(step=step, num=str(self.num_eval[self.eval_type]), IS=kl_score))
+                self.logger.info('F_{beta} score (Step: {step}, Using {type} images): {F_beta}'.format(
+                    beta=beta4PR, step=step, type=self.eval_type, F_beta=f_beta))
+                self.logger.info('F_1/{beta} score (Step: {step}, Using {type} images): {F_beta_inv}'.format(
+                    beta=beta4PR, step=step, type=self.eval_type, F_beta_inv=f_beta_inv))
+                self.logger.info('FID score (Step: {step}, Using {type} moments): {FID}'.format(
+                    step=step, type=self.eval_type, FID=fid_score))
+                self.logger.info('Inception score (Step: {step}, {num} generated images): {IS}'.format(
+                    step=step, num=str(self.num_eval[self.eval_type]), IS=kl_score))
                 if self.train:
-                    self.logger.info('Best FID score (Step: {step}, Using {type} moments): {FID}'.format(step=self.best_step, type=self.eval_type, FID=self.best_fid))
+                    self.logger.info('Best FID score (Step: {step}, Using {type} moments): {FID}'.format(
+                        step=self.best_step, type=self.eval_type, FID=self.best_fid))
 
             self.dis_model.train()
-            generator = change_generator_mode(self.gen_model, self.Gen_copy, self.bn_stat_OnTheFly, standing_statistics, standing_step,
-                                              self.prior, self.batch_size, self.z_dim, self.num_classes, self.local_rank, training=True, counter=self.counter)
+            generator = change_generator_mode(self.gen_model, self.Gen_copy, self.bn_stat_OnTheFly, 
+                                              standing_statistics, standing_step, self.prior, 
+                                              self.batch_size, self.z_dim, self.num_classes, 
+                                              self.local_rank, training=True, counter=self.counter)
 
         return is_best
     ################################################################################################################################
